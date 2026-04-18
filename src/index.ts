@@ -4,8 +4,9 @@ import { logger } from "hono/logger";
 import { prettyJSON } from "hono/pretty-json";
 import { HTTPException } from "hono/http-exception";
 
-import health from "./routes/health";
-import auth   from "./routes/auth";
+import health  from "./routes/health";
+import auth    from "./routes/auth";
+import clients from "./routes/clients";
 
 // --- App Setup ---
 const app = new Hono();
@@ -24,11 +25,9 @@ app.use("*", logger());
 app.use("*", prettyJSON());
 
 // --- Routes ---
-app.route("/health", health);
-app.route("/auth",   auth);
-
-// Placeholder routes (wired up in later steps)
-// app.route("/clients", clients);   // Step 3
+app.route("/health",  health);
+app.route("/auth",    auth);
+app.route("/clients", clients);
 // app.route("/invoices", invoices); // Step 4
 // app.route("/webhooks", webhooks); // Step 8
 
