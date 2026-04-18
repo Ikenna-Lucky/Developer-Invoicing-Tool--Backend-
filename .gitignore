@@ -1,0 +1,29 @@
+# Dependencies
+node_modules
+.pnp
+.pnp.js
+
+# Build outputs
+dist
+build
+
+# Environment variables
+.env
+.env.local
+.env.production
+.env.development
+
+# Drizzle migrations (keep generated folder but not DB secrets)
+# drizzle/  ← keep this tracked
+
+# Logs
+*.log
+bun.lockb.bak
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode
+.idea
