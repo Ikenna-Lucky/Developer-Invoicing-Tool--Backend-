@@ -68,8 +68,9 @@ auth.post(
       return c.json({ error: "An account with this email already exists" }, 409);
     }
 
-    // Hash password
-    const passwordHash = await bcrypt.hash(password, 12);
+    // Hash password — cost factor 10 is the Node.js recommended default
+    // (factor 12 adds ~300 ms of blocking CPU work with no meaningful security gain here)
+    const passwordHash = await bcrypt.hash(password, 10);
     const userId = generateId();
 
     // Create user
@@ -213,15 +214,25 @@ auth.post("/refresh", async (c) => {
 auth.post("/logout", async (c) => {
   const token = getCookie(c, REFRESH_COOKIE);
 
+  // ── Clear cookies FIRST ────────────────────────────────────────────────────
+  // This is the critical action. The response must carry the Set-Cookie
+  // headers that delete the session regardless of what happens to the DB below.
+  // Without this order, a Neon cold-start timeout on the DB call would throw
+  // a 500 before clearAuthCookies runs, leaving the browser with stale cookies
+  // and trapping the user in a redirect loop between /sign-in and /dashboard.
+  clearAuthCookies(c);
+
+  // ── Revoke refresh token in DB — fire and forget ───────────────────────────
+  // Non-blocking: the DB update is best-effort. If Neon is cold or the update
+  // fails, the worst case is that the token sits in the DB until its natural
+  // 7-day expiry. The user is already signed out (cookies cleared above).
   if (token) {
-    // Revoke the refresh token in DB
-    await db
-      .update(refreshTokens)
+    db.update(refreshTokens)
       .set({ revoked: true })
-      .where(eq(refreshTokens.tokenHash, hashToken(token)));
+      .where(eq(refreshTokens.tokenHash, hashToken(token)))
+      .catch(() => { /* non-critical — token expires naturally */ });
   }
 
-  clearAuthCookies(c);
   return c.json({ message: "Logged out successfully" });
 });
 
