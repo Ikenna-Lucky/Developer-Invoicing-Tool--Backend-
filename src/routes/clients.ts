@@ -34,11 +34,11 @@ clientsRouter.use("*", authMiddleware);
 // reach your business logic.
 
 const createClientSchema = z.object({
-  name:        z.string().min(2, "Name must be at least 2 characters"),
-  email:       z.string().email("Please provide a valid email address"),
+  name: z.string().min(2, "Name must be at least 2 characters"),
+  email: z.string().email("Please provide a valid email address"),
   companyName: z.string().optional(),
-  phone:       z.string().optional(),
-  address:     z.string().optional(),
+  phone: z.string().optional(),
+  address: z.string().optional(),
 });
 
 // For updates we use .partial() — every field becomes optional so the client
@@ -63,12 +63,12 @@ clientsRouter.get("/", async (c) => {
         ? and(
             eq(clients.userId, userId),
             or(
-              ilike(clients.name,        `%${search}%`), // case-insensitive LIKE
-              ilike(clients.email,       `%${search}%`),
-              ilike(clients.companyName, `%${search}%`)
-            )
+              ilike(clients.name, `%${search}%`), // case-insensitive LIKE
+              ilike(clients.email, `%${search}%`),
+              ilike(clients.companyName, `%${search}%`),
+            ),
           )
-        : eq(clients.userId, userId)
+        : eq(clients.userId, userId),
     )
     .orderBy(desc(clients.createdAt));
 
@@ -79,14 +79,11 @@ clientsRouter.get("/", async (c) => {
 // Returns a single client. Returns 404 if not found or doesn't belong to user.
 
 clientsRouter.get("/:id", async (c) => {
-  const userId   = c.get("userId");
+  const userId = c.get("userId");
   const clientId = c.req.param("id");
 
   const client = await db.query.clients.findFirst({
-    where: and(
-      eq(clients.id,     clientId),
-      eq(clients.userId, userId)
-    ),
+    where: and(eq(clients.id, clientId), eq(clients.userId, userId)),
   });
 
   if (!client) {
@@ -100,69 +97,64 @@ clientsRouter.get("/:id", async (c) => {
 // Creates a new client. zValidator runs first and validates the request body.
 // If validation fails, Hono automatically returns a 400 with the error details.
 
-clientsRouter.post(
-  "/",
-  zValidator("json", createClientSchema),
-  async (c) => {
-    const userId = c.get("userId");
-    const body   = c.req.valid("json"); // type-safe — TypeScript knows the shape
+clientsRouter.post("/", zValidator("json", createClientSchema), async (c) => {
+  const userId = c.get("userId");
+  const body = c.req.valid("json"); // type-safe — TypeScript knows the shape
 
-    const [newClient] = await db
-      .insert(clients)
-      .values({
-        id:          crypto.randomUUID(),
-        userId,
-        name:        body.name,
-        email:       body.email,
-        companyName: body.companyName,
-        phone:       body.phone,
-        address:     body.address,
-      })
-      .returning(); // .returning() tells PostgreSQL to send back the inserted row
+  const [newClient] = await db
+    .insert(clients)
+    .values({
+      id: crypto.randomUUID(),
+      userId,
+      name: body.name,
+      email: body.email,
+      companyName: body.companyName,
+      phone: body.phone,
+      address: body.address,
+    })
+    .returning(); // .returning() tells PostgreSQL to send back the inserted row
 
-    return c.json({ data: newClient, message: "Client created successfully" }, 201);
-  }
-);
+  return c.json(
+    { data: newClient, message: "Client created successfully" },
+    201,
+  );
+});
 
 // ─── PUT /clients/:id ─────────────────────────────────────────────────────────
 // Updates an existing client. Only updates the fields that are provided.
 
-clientsRouter.put(
-  "/:id",
-  zValidator("json", updateClientSchema),
-  async (c) => {
-    const userId   = c.get("userId");
-    const clientId = c.req.param("id");
-    const body     = c.req.valid("json");
+clientsRouter.put("/:id", zValidator("json", updateClientSchema), async (c) => {
+  const userId = c.get("userId");
+  const clientId = c.req.param("id");
+  const body = c.req.valid("json");
 
-    // First check the client exists and belongs to this user
-    const existing = await db.query.clients.findFirst({
-      where: and(eq(clients.id, clientId), eq(clients.userId, userId)),
-    });
+  // First check the client exists and belongs to this user
+  const existing = await db.query.clients.findFirst({
+    where: and(eq(clients.id, clientId), eq(clients.userId, userId)),
+  });
 
-    if (!existing) {
-      return c.json({ error: "Client not found" }, 404);
-    }
-
-    const [updated] = await db
-      .update(clients)
-      .set({
-        ...body,
-        updatedAt: new Date(), // always bump updatedAt on changes
-      })
-      .where(and(eq(clients.id, clientId), eq(clients.userId, userId)))
-      .returning();
-
-    return c.json({ data: updated, message: "Client updated successfully" });
+  if (!existing) {
+    return c.json({ error: "Client not found" }, 404);
   }
-);
+
+  const [updated] = await db
+    .update(clients)
+    .set({
+      ...body,
+      updatedAt: new Date(), // always bump updatedAt on changes
+    })
+    .where(and(eq(clients.id, clientId), eq(clients.userId, userId)))
+    .returning();
+
+  return c.json({ data: updated, message: "Client updated successfully" });
+});
 
 // ─── DELETE /clients/:id ──────────────────────────────────────────────────────
 // Deletes a client. Because we set onDelete: "cascade" in the schema,
 // PostgreSQL will automatically delete all invoices belonging to this client too.
 
 clientsRouter.delete("/:id", async (c) => {
-  const userId   = c.get("userId");
+  const userId = c.get("userId");
   const clientId = c.req.param("id");
 
   const existing = await db.query.clients.findFirst({

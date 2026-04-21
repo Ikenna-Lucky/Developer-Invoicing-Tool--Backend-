@@ -1,4 +1,5 @@
 import { pgTable, text, timestamp, numeric, boolean, pgEnum } from "drizzle-orm/pg-core";
+import { relations } from "drizzle-orm";
 
 // ─── Enums ────────────────────────────────────────────────────────────────────
 export const invoiceStatusEnum = pgEnum("invoice_status", [
@@ -83,6 +84,36 @@ export const payments = pgTable("payments", {
   stripePaymentId:  text("stripe_payment_id").unique(),
   createdAt:        timestamp("created_at").defaultNow().notNull(),
 });
+
+// ─── Relations ────────────────────────────────────────────────────────────────
+// Drizzle needs explicit relation definitions to support the `with` syntax
+// in db.query.* calls (e.g. findFirst({ with: { items: true, client: true } }))
+
+export const clientsRelations = relations(clients, ({ many }) => ({
+  invoices: many(invoices),
+}));
+
+export const invoicesRelations = relations(invoices, ({ one, many }) => ({
+  client: one(clients, {
+    fields:     [invoices.clientId],
+    references: [clients.id],
+  }),
+  items: many(invoiceItems),
+}));
+
+export const invoiceItemsRelations = relations(invoiceItems, ({ one }) => ({
+  invoice: one(invoices, {
+    fields:     [invoiceItems.invoiceId],
+    references: [invoices.id],
+  }),
+}));
+
+export const paymentsRelations = relations(payments, ({ one }) => ({
+  invoice: one(invoices, {
+    fields:     [payments.invoiceId],
+    references: [invoices.id],
+  }),
+}));
 
 // ─── Inferred Types ───────────────────────────────────────────────────────────
 export type User         = typeof users.$inferSelect;

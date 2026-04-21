@@ -4,9 +4,10 @@ import { logger } from "hono/logger";
 import { prettyJSON } from "hono/pretty-json";
 import { HTTPException } from "hono/http-exception";
 
-import health  from "./routes/health";
-import auth    from "./routes/auth";
-import clients from "./routes/clients";
+import health   from "./routes/health";
+import auth     from "./routes/auth";
+import clients  from "./routes/clients";
+import invoices from "./routes/invoices";
 
 // --- App Setup ---
 const app = new Hono();
@@ -25,10 +26,10 @@ app.use("*", logger());
 app.use("*", prettyJSON());
 
 // --- Routes ---
-app.route("/health",  health);
-app.route("/auth",    auth);
-app.route("/clients", clients);
-// app.route("/invoices", invoices); // Step 4
+app.route("/health",   health);
+app.route("/auth",     auth);
+app.route("/clients",  clients);
+app.route("/invoices", invoices);
 // app.route("/webhooks", webhooks); // Step 8
 
 // --- Root ---
