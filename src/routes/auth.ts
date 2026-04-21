@@ -226,17 +226,11 @@ auth.post("/logout", async (c) => {
 });
 
 // ─── GET /auth/me ─────────────────────────────────────────────────────────────
-// Returns the current user's profile — requires valid access token
 auth.get("/me", authMiddleware, async (c) => {
   const userId = c.get("userId");
 
-  const user = await db.query.users.findFirst({
-    where: eq(users.id, userId),
-  });
-
-  if (!user) {
-    return c.json({ error: "User not found" }, 404);
-  }
+  const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
+  if (!user) return c.json({ error: "User not found" }, 404);
 
   return c.json({
     id:           user.id,
@@ -249,5 +243,45 @@ auth.get("/me", authMiddleware, async (c) => {
     createdAt:    user.createdAt,
   });
 });
+
+// ─── PATCH /auth/me ────────────────────────────────────────────────────────────
+// Update the current user's profile (fullName, phone, address, businessName, logoUrl/avatar)
+auth.patch(
+  "/me",
+  authMiddleware,
+  zValidator(
+    "json",
+    z.object({
+      fullName:     z.string().min(1).optional(),
+      phone:        z.string().optional(),
+      businessName: z.string().optional(),
+      address:      z.string().optional(),
+      logoUrl:      z.string().optional(), // used as profile avatar (base64 or URL)
+    })
+  ),
+  async (c) => {
+    const userId = c.get("userId");
+    const body   = c.req.valid("json");
+
+    await db
+      .update(users)
+      .set({ ...body, updatedAt: new Date() })
+      .where(eq(users.id, userId));
+
+    const updated = await db.query.users.findFirst({ where: eq(users.id, userId) });
+    if (!updated) return c.json({ error: "User not found" }, 404);
+
+    return c.json({
+      id:           updated.id,
+      email:        updated.email,
+      fullName:     updated.fullName,
+      businessName: updated.businessName,
+      logoUrl:      updated.logoUrl,
+      address:      updated.address,
+      phone:        updated.phone,
+      createdAt:    updated.createdAt,
+    });
+  }
+);
 
 export default auth;
