@@ -130,8 +130,16 @@ auth.post(
       where: eq(users.email, email.toLowerCase()),
     });
 
+    // If the account was created via Google, it has no password
+    if (user && !user.passwordHash) {
+      return c.json(
+        { error: "This account uses Google Sign-In. Please click 'Continue with Google' to access it." },
+        401
+      );
+    }
+
     // Use constant-time comparison to prevent timing attacks
-    if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+    if (!user || !(await bcrypt.compare(password, user.passwordHash!))) {
       return c.json({ error: "Invalid email or password" }, 401);
     }
 
@@ -294,5 +302,164 @@ auth.patch(
     });
   }
 );
+
+// ─── GET /auth/google — initiate OAuth flow ───────────────────────────────────
+auth.get("/google", (c) => {
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  if (!clientId) {
+    return c.json({ error: "Google OAuth is not configured on this server" }, 503);
+  }
+
+  const apiUrl      = process.env.API_URL      ?? "http://localhost:3001";
+  const redirectUri = `${apiUrl}/auth/google/callback`;
+
+  // Random state value — stored in a short-lived httpOnly cookie so we can
+  // verify it in the callback (CSRF protection)
+  const state = crypto.randomUUID();
+
+  setCookie(c, "oauth_state", state, {
+    httpOnly: true,
+    secure:   IS_PROD,
+    sameSite: "Lax",
+    path:     "/",
+    maxAge:   60 * 10, // 10 minutes — plenty of time to complete the OAuth flow
+  });
+
+  const params = new URLSearchParams({
+    client_id:     clientId,
+    redirect_uri:  redirectUri,
+    response_type: "code",
+    scope:         "openid email profile",
+    state,
+    access_type:   "online",
+    prompt:        "select_account", // always show the account picker
+  });
+
+  return c.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`);
+});
+
+// ─── GET /auth/google/callback — handle Google's redirect back ────────────────
+auth.get("/google/callback", async (c) => {
+  const { code, state, error } = c.req.query();
+
+  const storedState = getCookie(c, "oauth_state");
+  deleteCookie(c, "oauth_state", { path: "/" });
+
+  const frontendUrl = process.env.FRONTEND_URL ?? "http://localhost:3000";
+  const apiUrl      = process.env.API_URL      ?? "http://localhost:3001";
+  const redirectUri = `${apiUrl}/auth/google/callback`;
+
+  // ── Validation ────────────────────────────────────────────────────────────
+
+  if (error === "access_denied") {
+    return c.redirect(`${frontendUrl}/sign-in?error=google_denied`);
+  }
+
+  if (!code) {
+    return c.redirect(`${frontendUrl}/sign-in?error=google_no_code`);
+  }
+
+  if (!state || !storedState || state !== storedState) {
+    return c.redirect(`${frontendUrl}/sign-in?error=google_state_mismatch`);
+  }
+
+  try {
+    // ── Exchange authorization code for access token ───────────────────────
+
+    const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+      method:  "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body:    new URLSearchParams({
+        code,
+        client_id:     process.env.GOOGLE_CLIENT_ID!,
+        client_secret: process.env.GOOGLE_CLIENT_SECRET!,
+        redirect_uri:  redirectUri,
+        grant_type:    "authorization_code",
+      }),
+    });
+
+    if (!tokenRes.ok) {
+      console.error("Google token exchange failed:", await tokenRes.text());
+      return c.redirect(`${frontendUrl}/sign-in?error=google_token_failed`);
+    }
+
+    const { access_token } = await tokenRes.json() as { access_token: string };
+
+    // ── Fetch the user's Google profile ───────────────────────────────────
+
+    const profileRes = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
+      headers: { Authorization: `Bearer ${access_token}` },
+    });
+
+    if (!profileRes.ok) {
+      return c.redirect(`${frontendUrl}/sign-in?error=google_profile_failed`);
+    }
+
+    const googleUser = await profileRes.json() as {
+      id:             string;
+      email:          string;
+      name:           string;
+      picture?:       string;
+      verified_email: boolean;
+    };
+
+    if (!googleUser.verified_email) {
+      return c.redirect(`${frontendUrl}/sign-in?error=google_unverified_email`);
+    }
+
+    // ── Find or create the Billd user account ─────────────────────────────
+
+    let user = await db.query.users.findFirst({
+      // Prefer matching by google_id (most precise), fall back to email
+      // so existing email/password accounts can be linked on first Google sign-in
+      where: eq(users.email, googleUser.email.toLowerCase()),
+    });
+
+    if (user) {
+      // Link the Google ID to the existing account if not already linked
+      if (!user.googleId) {
+        await db
+          .update(users)
+          .set({ googleId: googleUser.id, updatedAt: new Date() })
+          .where(eq(users.id, user.id));
+        user = { ...user, googleId: googleUser.id };
+      }
+    } else {
+      // First time — create a brand-new Billd account from Google profile
+      const [newUser] = await db
+        .insert(users)
+        .values({
+          id:           generateId(),
+          email:        googleUser.email.toLowerCase(),
+          fullName:     googleUser.name,
+          googleId:     googleUser.id,
+          logoUrl:      googleUser.picture ?? null,
+          passwordHash: null, // Google-only account — no password
+        })
+        .returning();
+      user = newUser;
+    }
+
+    // ── Issue Billd session tokens ─────────────────────────────────────────
+
+    const accessToken  = await signAccessToken({ sub: user.id, email: user.email });
+    const refreshToken = await signRefreshToken({ sub: user.id, email: user.email });
+
+    await db.insert(refreshTokens).values({
+      id:        generateId(),
+      userId:    user.id,
+      tokenHash: hashToken(refreshToken),
+      expiresAt: tokenExpiryDate(process.env.JWT_REFRESH_EXPIRES_IN ?? "7d"),
+    });
+
+    setAuthCookies(c, accessToken, refreshToken);
+
+    return c.redirect(`${frontendUrl}/dashboard`);
+
+  } catch (err) {
+    console.error("Google OAuth callback error:", err);
+    return c.redirect(`${frontendUrl}/sign-in?error=google_auth_failed`);
+  }
+});
 
 export default auth;
