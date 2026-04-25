@@ -6,6 +6,7 @@ import { eq, and, desc, ilike, or } from "drizzle-orm";
 import { db } from "../db";
 import { clients } from "../db/schema";
 import { authMiddleware } from "../middleware/auth";
+import type { Variables } from "../types";
 
 /**
  * CLIENTS ROUTER
@@ -23,7 +24,7 @@ import { authMiddleware } from "../middleware/auth";
  * we prevent it by always scoping DB queries to the logged-in user.
  */
 
-const clientsRouter = new Hono();
+const clientsRouter = new Hono<{ Variables: Variables }>();
 
 // Apply auth middleware to ALL routes in this file at once
 clientsRouter.use("*", authMiddleware);

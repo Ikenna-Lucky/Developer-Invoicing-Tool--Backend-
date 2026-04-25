@@ -2,6 +2,7 @@ import { createMiddleware } from "hono/factory";
 import { getCookie } from "hono/cookie";
 import { HTTPException } from "hono/http-exception";
 import { verifyAccessToken } from "../lib/jwt";
+import type { Variables } from "../types";
 
 /**
  * Auth middleware — verifies the access_token httpOnly cookie on every
@@ -9,20 +10,24 @@ import { verifyAccessToken } from "../lib/jwt";
  *
  * Usage:  route.get("/protected", authMiddleware, (c) => { ... })
  */
-export const authMiddleware = createMiddleware(async (c, next) => {
-  const token = getCookie(c, "access_token");
+export const authMiddleware = createMiddleware<{ Variables: Variables }>(
+  async (c, next) => {
+    const token = getCookie(c, "access_token");
 
-  if (!token) {
-    throw new HTTPException(401, { message: "Unauthorized: Please log in" });
-  }
+    if (!token) {
+      throw new HTTPException(401, { message: "Unauthorized: Please log in" });
+    }
 
-  try {
-    const payload = await verifyAccessToken(token);
-    c.set("userId",    payload.sub);
-    c.set("userEmail", payload.email);
-  } catch {
-    throw new HTTPException(401, { message: "Unauthorized: Session expired, please log in again" });
-  }
+    try {
+      const payload = await verifyAccessToken(token);
+      c.set("userId", payload.sub);
+      c.set("userEmail", payload.email);
+    } catch {
+      throw new HTTPException(401, {
+        message: "Unauthorized: Session expired, please log in again",
+      });
+    }
 
-  await next();
-});
+    await next();
+  },
+);

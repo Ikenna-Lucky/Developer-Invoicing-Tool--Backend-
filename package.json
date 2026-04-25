@@ -16,6 +16,8 @@
     "hono": "^4.3.11",
     "jose": "^5.4.1",
     "postgres": "^3.4.4",
+    "puppeteer": "^22.15.0",
+    "resend": "^6.12.2",
     "zod": "^3.23.8"
   },
   "devDependencies": {
