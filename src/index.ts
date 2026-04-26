@@ -8,6 +8,7 @@ import health   from "./routes/health";
 import auth     from "./routes/auth";
 import clients  from "./routes/clients";
 import invoices from "./routes/invoices";
+import webhooks from "./routes/webhooks";
 
 // --- App Setup ---
 const app = new Hono();
@@ -30,7 +31,7 @@ app.route("/health",   health);
 app.route("/auth",     auth);
 app.route("/clients",  clients);
 app.route("/invoices", invoices);
-// app.route("/webhooks", webhooks); // Step 8
+app.route("/webhooks", webhooks);
 
 // --- Root ---
 app.get("/", (c) => {
