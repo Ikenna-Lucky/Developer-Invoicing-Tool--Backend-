@@ -4,9 +4,9 @@ import { logger } from "hono/logger";
 import { prettyJSON } from "hono/pretty-json";
 import { HTTPException } from "hono/http-exception";
 
-import health   from "./routes/health";
-import auth     from "./routes/auth";
-import clients  from "./routes/clients";
+import health from "./routes/health";
+import auth from "./routes/auth";
+import clients from "./routes/clients";
 import invoices from "./routes/invoices";
 import webhooks from "./routes/webhooks";
 
@@ -14,22 +14,29 @@ import webhooks from "./routes/webhooks";
 const app = new Hono();
 
 // --- Global Middleware ---
+const allowedOrigins = [
+  "http://localhost:3000",
+  "http://localhost:3001",
+  process.env.FRONTEND_URL,
+].filter(Boolean) as string[];
+
 app.use(
   "*",
   cors({
-    origin: process.env.FRONTEND_URL ?? "http://localhost:3000",
+    origin: (origin) =>
+      allowedOrigins.includes(origin) ? origin : allowedOrigins[0],
     allowHeaders: ["Content-Type", "Authorization"],
     allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     credentials: true,
-  })
+  }),
 );
 app.use("*", logger());
 app.use("*", prettyJSON());
 
 // --- Routes ---
-app.route("/health",   health);
-app.route("/auth",     auth);
-app.route("/clients",  clients);
+app.route("/health", health);
+app.route("/auth", auth);
+app.route("/clients", clients);
 app.route("/invoices", invoices);
 app.route("/webhooks", webhooks);
 
