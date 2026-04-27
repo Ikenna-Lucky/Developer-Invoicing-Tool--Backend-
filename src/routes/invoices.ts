@@ -610,4 +610,7 @@ invoicesRouter.delete("/:id", async (c) => {
     .delete(invoices)
     .where(and(eq(invoices.id, invoiceId), eq(invoices.userId, userId)));
 
-  return c.json({ message: "Invoi
+  return c.json({ message: "Invoice deleted successfully" });
+});
+
+export default invoicesRouter;
