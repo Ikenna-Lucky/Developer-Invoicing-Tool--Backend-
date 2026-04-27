@@ -2,12 +2,11 @@ import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import { eq, and, desc, ilike, or, sql } from "drizzle-orm";
-import { Resend } from "resend";
-
 import { db } from "../db";
 import { invoices, invoiceItems, clients, users } from "../db/schema";
 import { authMiddleware } from "../middleware/auth";
 import { generateInvoicePDF } from "../lib/pdf";
+import { sendMail } from "../lib/email";
 import type { Variables } from "../types";
 
 const invoicesRouter = new Hono<{ Variables: Variables }>();
@@ -409,29 +408,19 @@ invoicesRouter.post("/:id/send", async (c) => {
     }
   }
 
-  // ── 2. Send email via Resend ──────────────────────────────────────────────
-  const resendKey = process.env.RESEND_API_KEY;
-  if (resendKey && resendKey !== "re_xxxxxxxxxxxxx") {
-    try {
-      const resend = new Resend(resendKey);
-      const senderName = user.businessName ?? user.fullName;
-      const fromDomain = process.env.EMAIL_FROM ?? "onboarding@resend.dev";
+  // ── 2. Send email via Gmail (Nodemailer) ─────────────────────────────────
+  const senderName = user.businessName ?? user.fullName;
+  const fromAddress = process.env.EMAIL_FROM
+    ? `${senderName} via Billd <${process.env.EMAIL_FROM}>`
+    : `${senderName} via Billd <${process.env.EMAIL_USER}>`;
 
-      await resend.emails.send({
-        from: `${senderName} via Billd <${fromDomain}>`,
-        to: invoice.client.email,
-        subject: `Invoice ${invoice.invoiceNumber} — ₦${Number(invoice.totalAmount).toLocaleString("en-NG")}`,
-        html: buildInvoiceEmail({
-          invoice,
-          senderName,
-          paymentLink,
-        }),
-      });
-    } catch (err) {
-      console.error("Resend error:", err);
-      // Non-fatal — mark invoice as sent anyway
-    }
-  }
+  await sendMail({
+    from: fromAddress,
+    to: invoice.client.email,
+    subject: `Invoice ${invoice.invoiceNumber} — ₦${Number(invoice.totalAmount).toLocaleString("en-NG")}`,
+    html: buildInvoiceEmail({ invoice, senderName, paymentLink }),
+  });
+  // sendMail is non-fatal — logs the error internally and returns false on failure
 
   // ── 3. Update invoice status + save payment link ──────────────────────────
   await db
@@ -621,7 +610,4 @@ invoicesRouter.delete("/:id", async (c) => {
     .delete(invoices)
     .where(and(eq(invoices.id, invoiceId), eq(invoices.userId, userId)));
 
-  return c.json({ message: "Invoice deleted successfully" });
-});
-
-export default invoicesRouter;
+  return c.json({ message: "Invoi
