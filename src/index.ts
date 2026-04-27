@@ -4,8 +4,11 @@ import { logger } from "hono/logger";
 import { prettyJSON } from "hono/pretty-json";
 import { HTTPException } from "hono/http-exception";
 
-import health from "./routes/health";
-import auth   from "./routes/auth";
+import health   from "./routes/health";
+import auth     from "./routes/auth";
+import clients  from "./routes/clients";
+import invoices from "./routes/invoices";
+import webhooks from "./routes/webhooks";
 
 // --- App Setup ---
 const app = new Hono();
@@ -16,7 +19,7 @@ app.use(
   cors({
     origin: process.env.FRONTEND_URL ?? "http://localhost:3000",
     allowHeaders: ["Content-Type", "Authorization"],
-    allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     credentials: true,
   })
 );
@@ -24,13 +27,11 @@ app.use("*", logger());
 app.use("*", prettyJSON());
 
 // --- Routes ---
-app.route("/health", health);
-app.route("/auth",   auth);
-
-// Placeholder routes (wired up in later steps)
-// app.route("/clients", clients);   // Step 3
-// app.route("/invoices", invoices); // Step 4
-// app.route("/webhooks", webhooks); // Step 8
+app.route("/health",   health);
+app.route("/auth",     auth);
+app.route("/clients",  clients);
+app.route("/invoices", invoices);
+app.route("/webhooks", webhooks);
 
 // --- Root ---
 app.get("/", (c) => {
