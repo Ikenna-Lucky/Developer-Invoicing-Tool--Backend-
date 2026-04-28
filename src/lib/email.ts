@@ -21,6 +21,13 @@ function getTransporter(): nodemailer.Transporter {
   _transporter = nodemailer.createTransport({
     service: "gmail",
     auth: { user, pass },
+    // Without these timeouts a failed/stale SMTP connection silently hangs
+    // the entire HTTP request until Render's 90-second gateway timeout kills
+    // it — which makes the browser throw "Failed to fetch" instead of a
+    // real error message.
+    connectionTimeout: 10_000, // give up connecting after 10 s
+    greetingTimeout: 10_000, // give up waiting for server EHLO after 10 s
+    socketTimeout: 30_000, // max time waiting for a send ACK
   });
 
   return _transporter;
