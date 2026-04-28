@@ -33,7 +33,10 @@ function setAuthCookies(c: any, accessToken: string, refreshToken: string) {
   const cookieOptions = {
     httpOnly: true,
     secure: IS_PROD,
-    sameSite: "Lax" as const,
+    // SameSite=None is required for cross-site cookies (netlify.app → onrender.com).
+    // It MUST be paired with Secure=true, which is only true in production.
+    // In development (localhost), Lax is fine — everything is same-origin.
+    sameSite: (IS_PROD ? "None" : "Lax") as "None" | "Lax",
     path: "/",
   };
 
