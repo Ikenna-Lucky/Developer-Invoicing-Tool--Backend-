@@ -14,17 +14,10 @@ import webhooks from "./routes/webhooks";
 const app = new Hono();
 
 // --- Global Middleware ---
-const allowedOrigins = [
-  "http://localhost:3000",
-  "http://localhost:3001",
-  process.env.FRONTEND_URL,
-].filter(Boolean) as string[];
-
 app.use(
   "*",
   cors({
-    origin: (origin) =>
-      allowedOrigins.includes(origin) ? origin : allowedOrigins[0],
+    origin: process.env.FRONTEND_URL ?? "http://localhost:3000",
     allowHeaders: ["Content-Type", "Authorization"],
     allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     credentials: true,
