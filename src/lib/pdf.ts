@@ -704,16 +704,40 @@ ${watermark}
 
 let _browser: Awaited<ReturnType<typeof puppeteer.launch>> | null = null;
 
-/** Reuse a single Chromium browser across requests — launch cost paid once. */
+/**
+ * Reuse a single Chromium browser across requests.
+ *
+ * Key production hardening:
+ *  - executablePath is set explicitly so Render's Docker Chromium is always found
+ *    (relying solely on the PUPPETEER_EXECUTABLE_PATH env var is unreliable).
+ *  - --no-zygote + --single-process reduce memory footprint on Render's free tier
+ *    (512 MB RAM). Without these, Chromium spawns extra zygote processes and can
+ *    trigger an OOM kill, crashing the entire Bun process mid-request.
+ *  - --disable-dev-shm-usage routes shared memory to /tmp instead of /dev/shm,
+ *    which is typically too small (64 MB) inside Docker containers.
+ */
 async function getBrowser() {
   if (!_browser || !_browser.connected) {
+    // Prefer the Docker env var; fall back to the common Debian/Ubuntu path.
+    const executablePath =
+      process.env.PUPPETEER_EXECUTABLE_PATH ??
+      "/usr/bin/chromium" ??
+      "/usr/bin/chromium-browser";
+
     _browser = await puppeteer.launch({
       headless: true,
+      executablePath,
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
         "--disable-dev-shm-usage",
         "--disable-gpu",
+        "--no-zygote",
+        "--single-process", // critical: prevents extra Chromium sub-processes
+        "--disable-extensions",
+        "--disable-background-networking",
+        "--disable-default-apps",
+        "--mute-audio",
       ],
     });
   }
@@ -722,11 +746,32 @@ async function getBrowser() {
 
 export async function generateInvoicePDF(input: PDFInput): Promise<Buffer> {
   const html = buildHTML(input);
-  const browser = await getBrowser();
-  const page = await browser.newPage();
+  let page: Awaited<ReturnType<typeof _browser.newPage>> | null = null;
 
   try {
-    await page.setContent(html, { waitUntil: "networkidle0" });
+    const browser = await getBrowser();
+    page = await browser.newPage();
+
+    // Disable unnecessary resource loading to keep memory usage low
+    await page.setRequestInterception(true);
+    page.on("request", (req) => {
+      const type = req.resourceType();
+      if (type === "image" || type === "font" || type === "media") {
+        // Allow data-URIs (inline images/logos) but block remote fetches
+        if (req.url().startsWith("data:")) {
+          req.continue();
+        } else {
+          req.abort();
+        }
+      } else {
+        req.continue();
+      }
+    });
+
+    await page.setContent(html, {
+      waitUntil: "domcontentloaded",
+      timeout: 30_000,
+    });
 
     // Let CSS finish rendering
     await page.evaluate(() => document.fonts.ready);
@@ -745,7 +790,24 @@ export async function generateInvoicePDF(input: PDFInput): Promise<Buffer> {
     });
 
     return Buffer.from(pdf);
+  } catch (err) {
+    // If Chromium crashed, reset the singleton so the next call re-launches cleanly
+    if (_browser) {
+      try {
+        await _browser.close();
+      } catch {
+        /* ignore */
+      }
+      _browser = null;
+    }
+    throw err;
   } finally {
-    await page.close();
+    if (page) {
+      try {
+        await page.close();
+      } catch {
+        /* ignore */
+      }
+    }
   }
 }
