@@ -1,4 +1,4 @@
-import puppeteer from "puppeteer";
+import puppeteer, { type Page } from "puppeteer";
 import type { Invoice, InvoiceItem, Client, User } from "../db/schema";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -718,11 +718,9 @@ let _browser: Awaited<ReturnType<typeof puppeteer.launch>> | null = null;
  */
 async function getBrowser() {
   if (!_browser || !_browser.connected) {
-    // Prefer the Docker env var; fall back to the common Debian/Ubuntu path.
+    // Use the env var set in the Dockerfile; fall back to the standard Debian path.
     const executablePath =
-      process.env.PUPPETEER_EXECUTABLE_PATH ??
-      "/usr/bin/chromium" ??
-      "/usr/bin/chromium-browser";
+      process.env.PUPPETEER_EXECUTABLE_PATH ?? "/usr/bin/chromium";
 
     _browser = await puppeteer.launch({
       headless: true,
@@ -746,7 +744,7 @@ async function getBrowser() {
 
 export async function generateInvoicePDF(input: PDFInput): Promise<Buffer> {
   const html = buildHTML(input);
-  let page: Awaited<ReturnType<typeof _browser.newPage>> | null = null;
+  let page: Page | null = null;
 
   try {
     const browser = await getBrowser();
