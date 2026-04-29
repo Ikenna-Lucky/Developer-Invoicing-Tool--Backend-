@@ -124,6 +124,34 @@ invoicesRouter.get("/", async (c) => {
   return c.json({ data: results });
 });
 
+// ─── GET /invoices/trash ──────────────────────────────────────────────────────
+// Returns all soft-deleted invoices for this user (Trash view).
+// IMPORTANT: must be defined before GET /:id so "trash" isn't treated as an ID.
+
+invoicesRouter.get("/trash", async (c) => {
+  const userId = c.get("userId");
+
+  const results = await db
+    .select({
+      id: invoices.id,
+      invoiceNumber: invoices.invoiceNumber,
+      status: invoices.status,
+      issueDate: invoices.issueDate,
+      dueDate: invoices.dueDate,
+      totalAmount: invoices.totalAmount,
+      deletedAt: invoices.deletedAt,
+      clientId: invoices.clientId,
+      clientName: clients.name,
+      clientEmail: clients.email,
+    })
+    .from(invoices)
+    .leftJoin(clients, eq(invoices.clientId, clients.id))
+    .where(and(eq(invoices.userId, userId), isNotNull(invoices.deletedAt)))
+    .orderBy(desc(invoices.deletedAt));
+
+  return c.json({ data: results });
+});
+
 // ─── GET /invoices/:id ────────────────────────────────────────────────────────
 // Returns a single invoice with its line items and full client info.
 
@@ -737,32 +765,6 @@ invoicesRouter.delete("/:id", async (c) => {
   return c.json({ message: "Invoice moved to Trash" });
 });
 
-// ─── GET /invoices/trash ──────────────────────────────────────────────────────
-// Returns all soft-deleted invoices for this user (Trash view).
-
-invoicesRouter.get("/trash", async (c) => {
-  const userId = c.get("userId");
-
-  const results = await db
-    .select({
-      id: invoices.id,
-      invoiceNumber: invoices.invoiceNumber,
-      status: invoices.status,
-      issueDate: invoices.issueDate,
-      dueDate: invoices.dueDate,
-      totalAmount: invoices.totalAmount,
-      deletedAt: invoices.deletedAt,
-      clientId: invoices.clientId,
-      clientName: clients.name,
-      clientEmail: clients.email,
-    })
-    .from(invoices)
-    .leftJoin(clients, eq(invoices.clientId, clients.id))
-    .where(and(eq(invoices.userId, userId), isNotNull(invoices.deletedAt)))
-    .orderBy(desc(invoices.deletedAt));
-
-  return c.json({ data: results });
-});
 
 // ─── POST /invoices/:id/restore ───────────────────────────────────────────────
 // Restores a soft-deleted invoice back to the active list.
@@ -813,9 +815,4 @@ invoicesRouter.delete("/:id/permanent", async (c) => {
 
   await db
     .delete(invoices)
-    .where(and(eq(invoices.id, invoiceId), eq(invoices.userId, userId)));
-
-  return c.json({ message: "Invoice permanently deleted" });
-});
-
-export default invoicesRouter;
+    .where(and(eq(invoic
