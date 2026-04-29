@@ -342,7 +342,9 @@ invoicesRouter.patch(
 
 // ─── POST /invoices/:id/send ──────────────────────────────────────────────────
 // Sends the invoice to the client via email.
-// Creates a Paystack payment link, emails the invoice with it, marks as "sent".
+// Creates a Paystack payment link, marks invoice as "sent", returns immediately,
+// then fires the email in the background so Render's 90-second gateway can't
+// cut off the response mid-flight.
 
 invoicesRouter.post("/:id/send", async (c) => {
   const userId = c.get("userId");
@@ -363,11 +365,16 @@ invoicesRouter.post("/:id/send", async (c) => {
   const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
   if (!user) return c.json({ error: "User not found" }, 404);
 
-  // ── 1. Generate Paystack payment link (test mode) ─────────────────────────
+  // ── 1. Generate Paystack payment link ─────────────────────────────────────
+  // Hard 8-second timeout so a slow/unresponsive Paystack API never hangs the
+  // entire request. Non-fatal — we send the email without a link if it fails.
   let paymentLink: string | null = null;
 
   const paystackKey = process.env.PAYSTACK_SECRET_KEY;
   if (paystackKey) {
+    const controller = new AbortController();
+    const paystackTimeout = setTimeout(() => controller.abort(), 8_000);
+
     try {
       // Paystack amounts are in kobo (1 NGN = 100 kobo)
       const amountInKobo = Math.round(Number(invoice.totalAmount) * 100);
@@ -390,6 +397,7 @@ invoicesRouter.post("/:id/send", async (c) => {
               client_name: invoice.client.name,
             },
           }),
+          signal: controller.signal,
         },
       );
 
@@ -403,26 +411,17 @@ invoicesRouter.post("/:id/send", async (c) => {
         }
       }
     } catch (err) {
-      console.error("Paystack error:", err);
-      // Non-fatal — we still send the email without a payment link
+      console.error("[send] Paystack error (non-fatal):", err);
+    } finally {
+      clearTimeout(paystackTimeout);
     }
   }
 
-  // ── 2. Send email via Gmail (Nodemailer) ─────────────────────────────────
-  const senderName = user.businessName ?? user.fullName;
-  const fromAddress = process.env.EMAIL_FROM
-    ? `${senderName} via Billd <${process.env.EMAIL_FROM}>`
-    : `${senderName} via Billd <${process.env.EMAIL_USER}>`;
-
-  await sendMail({
-    from: fromAddress,
-    to: invoice.client.email,
-    subject: `Invoice ${invoice.invoiceNumber} — ₦${Number(invoice.totalAmount).toLocaleString("en-NG")}`,
-    html: buildInvoiceEmail({ invoice, senderName, paymentLink }),
-  });
-  // sendMail is non-fatal — logs the error internally and returns false on failure
-
-  // ── 3. Update invoice status + save payment link ──────────────────────────
+  // ── 2. Update invoice status + save payment link ──────────────────────────
+  // Do this BEFORE returning the response so the DB is always consistent even
+  // if the background email job fails. This also prevents the "double-send"
+  // bug where the gateway timeout causes the client to retry and the second
+  // request hits "Only draft invoices can be sent".
   await db
     .update(invoices)
     .set({
@@ -435,6 +434,24 @@ invoicesRouter.post("/:id/send", async (c) => {
   const updated = await db.query.invoices.findFirst({
     where: eq(invoices.id, invoiceId),
     with: { items: true, client: true },
+  });
+
+  // ── 3. Fire email in the background (non-blocking) ────────────────────────
+  // We do NOT await this. The HTTP response is already on its way back to the
+  // client. Bun keeps the process alive to finish this work even after the
+  // response is flushed — email delivery happens out-of-band.
+  const senderName = user.businessName ?? user.fullName;
+  const fromAddress = process.env.EMAIL_FROM
+    ? `${senderName} via Billd <${process.env.EMAIL_FROM}>`
+    : `${senderName} via Billd <${process.env.EMAIL_USER}>`;
+
+  sendMail({
+    from: fromAddress,
+    to: invoice.client.email,
+    subject: `Invoice ${invoice.invoiceNumber} — ₦${Number(invoice.totalAmount).toLocaleString("en-NG")}`,
+    html: buildInvoiceEmail({ invoice, senderName, paymentLink }),
+  }).catch((err) => {
+    console.error("[send] Background email failed:", err);
   });
 
   return c.json({ data: updated, message: "Invoice sent successfully" });
