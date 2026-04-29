@@ -46,6 +46,19 @@ export const refreshTokens = pgTable("refresh_tokens", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
+// ─── Password Reset Tokens ────────────────────────────────────────────────────
+// Short-lived one-time tokens for the forgot-password flow.
+// We store only the SHA-256 hash so a DB leak doesn't expose valid tokens.
+export const passwordResetTokens = pgTable("password_reset_tokens", {
+  id: text("id").primaryKey(),
+  userId: text("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  tokenHash: text("token_hash").notNull().unique(),
+  expiresAt: timestamp("expires_at").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
 // ─── Clients ──────────────────────────────────────────────────────────────────
 export const clients = pgTable("clients", {
   id: text("id").primaryKey(),

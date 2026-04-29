@@ -19,11 +19,14 @@ export async function signAccessToken(payload: JWTPayload): Promise<string> {
     .sign(accessSecret);
 }
 
-export async function signRefreshToken(payload: JWTPayload): Promise<string> {
+export async function signRefreshToken(
+  payload: JWTPayload,
+  expiresIn?: string,
+): Promise<string> {
   return new SignJWT({ ...payload })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
-    .setExpirationTime(process.env.JWT_REFRESH_EXPIRES_IN ?? "7d")
+    .setExpirationTime(expiresIn ?? process.env.JWT_REFRESH_EXPIRES_IN ?? "7d")
     .sign(refreshSecret);
 }
 
