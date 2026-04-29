@@ -742,8 +742,7 @@ async function getBrowser() {
   return _browser;
 }
 
-export async function generateInvoicePDF(input: PDFInput): Promise<Buffer> {
-  const html = buildHTML(input);
+async function _generatePDF(html: string): Promise<Buffer> {
   let page: Page | null = null;
 
   try {
@@ -789,7 +788,8 @@ export async function generateInvoicePDF(input: PDFInput): Promise<Buffer> {
 
     return Buffer.from(pdf);
   } catch (err) {
-    // If Chromium crashed, reset the singleton so the next call re-launches cleanly
+    // Chromium crashed — reset the singleton so the retry (or next call)
+    // re-launches a fresh browser process
     if (_browser) {
       try {
         await _browser.close();
@@ -806,6 +806,25 @@ export async function generateInvoicePDF(input: PDFInput): Promise<Buffer> {
       } catch {
         /* ignore */
       }
+    }
+  }
+}
+
+export async function generateInvoicePDF(input: PDFInput): Promise<Buffer> {
+  const html = buildHTML(input);
+
+  try {
+    return await _generatePDF(html);
+  } catch (firstErr) {
+    // On Render's free tier (512 MB RAM) Chromium occasionally gets OOM-killed
+    // mid-render. The first attempt resets the browser singleton; retry once
+    // with a fresh process before giving up.
+    console.warn("[pdf] First attempt failed, retrying once:", firstErr);
+    try {
+      return await _generatePDF(html);
+    } catch (secondErr) {
+      console.error("[pdf] Retry also failed:", secondErr);
+      throw secondErr;
     }
   }
 }

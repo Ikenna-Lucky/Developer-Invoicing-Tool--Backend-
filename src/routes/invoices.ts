@@ -440,18 +440,15 @@ invoicesRouter.post("/:id/send", async (c) => {
   // We do NOT await this. The HTTP response is already on its way back to the
   // client. Bun keeps the process alive to finish this work even after the
   // response is flushed — email delivery happens out-of-band.
+  //
+  // We intentionally omit `from` here. email.ts defaults to the Resend sandbox
+  // sender (onboarding@resend.dev). Once you verify a custom domain in Resend,
+  // set RESEND_FROM="Billd <invoices@yourdomain.com>" and add it back here.
   const senderName = user.businessName ?? user.fullName;
-  // Only set a custom From address when EMAIL_FROM is explicitly configured
-  // (i.e. a verified domain in Resend). Without it, email.ts falls back to
-  // Resend's sandbox address (onboarding@resend.dev) which is always valid.
-  const fromAddress = process.env.EMAIL_FROM
-    ? `${senderName} via Billd <${process.env.EMAIL_FROM}>`
-    : undefined;
 
   sendMail({
-    from: fromAddress,
     to: invoice.client.email,
-    subject: `Invoice ${invoice.invoiceNumber} — ₦${Number(invoice.totalAmount).toLocaleString("en-NG")}`,
+    subject: `Invoice ${invoice.invoiceNumber} from ${senderName} — ₦${Number(invoice.totalAmount).toLocaleString("en-NG")}`,
     html: buildInvoiceEmail({ invoice, senderName, paymentLink }),
   }).catch((err) => {
     console.error("[send] Background email failed:", err);
