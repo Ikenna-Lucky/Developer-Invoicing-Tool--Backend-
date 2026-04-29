@@ -6,7 +6,8 @@ import { eq } from "drizzle-orm";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 
 import { db } from "../db";
-import { users, refreshTokens } from "../db/schema";
+import { users, refreshTokens, passwordResetTokens } from "../db/schema";
+import { sendMail } from "../lib/email";
 import {
   signAccessToken,
   signRefreshToken,
@@ -140,10 +141,11 @@ auth.post(
     z.object({
       email: z.string().email(),
       password: z.string().min(1, "Password is required"),
+      rememberMe: z.boolean().optional().default(false),
     }),
   ),
   async (c) => {
-    const { email, password } = c.req.valid("json");
+    const { email, password, rememberMe } = c.req.valid("json");
 
     const user = await db.query.users.findFirst({
       where: eq(users.email, email.toLowerCase()),
@@ -165,25 +167,45 @@ auth.post(
       return c.json({ error: "Invalid email or password" }, 401);
     }
 
+    // "Remember me" extends the refresh token from 7 days → 30 days
+    const refreshTTL = rememberMe
+      ? "30d"
+      : (process.env.JWT_REFRESH_EXPIRES_IN ?? "7d");
+    const cookieMaxAge = rememberMe ? 60 * 60 * 24 * 30 : 60 * 60 * 24 * 7;
+
     // Issue tokens
     const accessToken = await signAccessToken({
       sub: user.id,
       email: user.email,
     });
-    const refreshToken = await signRefreshToken({
-      sub: user.id,
-      email: user.email,
-    });
+    const refreshToken = await signRefreshToken(
+      { sub: user.id, email: user.email },
+      refreshTTL,
+    );
 
     // Store hashed refresh token
     await db.insert(refreshTokens).values({
       id: generateId(),
       userId: user.id,
       tokenHash: hashToken(refreshToken),
-      expiresAt: tokenExpiryDate(process.env.JWT_REFRESH_EXPIRES_IN ?? "7d"),
+      expiresAt: tokenExpiryDate(refreshTTL),
     });
 
-    setAuthCookies(c, accessToken, refreshToken);
+    // Override cookie max-age for remember-me sessions
+    const cookieOptions = {
+      httpOnly: true,
+      secure: IS_PROD,
+      sameSite: (IS_PROD ? "None" : "Lax") as "None" | "Lax",
+      path: "/",
+    };
+    setCookie(c, ACCESS_COOKIE, accessToken, {
+      ...cookieOptions,
+      maxAge: 60 * 15,
+    });
+    setCookie(c, REFRESH_COOKIE, refreshToken, {
+      ...cookieOptions,
+      maxAge: cookieMaxAge,
+    });
 
     return c.json({
       message: "Logged in successfully",
@@ -518,5 +540,178 @@ auth.get("/google/callback", async (c) => {
     return c.redirect(`${frontendUrl}/sign-in?error=google_auth_failed`);
   }
 });
+
+// ─── POST /auth/forgot-password ───────────────────────────────────────────────
+// Generates a one-time reset token and emails a reset link to the user.
+// Always returns 200 regardless of whether the email exists (prevents enumeration).
+
+auth.post(
+  "/forgot-password",
+  zValidator("json", z.object({ email: z.string().email() })),
+  async (c) => {
+    const { email } = c.req.valid("json");
+    const frontendUrl = process.env.FRONTEND_URL ?? "http://localhost:3000";
+
+    const user = await db.query.users.findFirst({
+      where: eq(users.email, email.toLowerCase()),
+    });
+
+    // Silent success — don't reveal whether the email exists
+    if (!user || !user.passwordHash) {
+      return c.json({
+        message: "If that email exists, a reset link has been sent.",
+      });
+    }
+
+    // Delete any existing tokens for this user (one active reset at a time)
+    await db
+      .delete(passwordResetTokens)
+      .where(eq(passwordResetTokens.userId, user.id));
+
+    // Generate a cryptographically random 32-byte token
+    const rawToken =
+      crypto.randomUUID().replace(/-/g, "") +
+      crypto.randomUUID().replace(/-/g, "");
+    const tokenHash = hashToken(rawToken);
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+
+    await db.insert(passwordResetTokens).values({
+      id: generateId(),
+      userId: user.id,
+      tokenHash,
+      expiresAt,
+    });
+
+    const resetUrl = `${frontendUrl}/reset-password?token=${rawToken}`;
+
+    await sendMail({
+      to: user.email,
+      subject: "Reset your Billd password",
+      html: buildResetEmail({ fullName: user.fullName, resetUrl }),
+    });
+
+    return c.json({
+      message: "If that email exists, a reset link has been sent.",
+    });
+  },
+);
+
+// ─── POST /auth/reset-password ────────────────────────────────────────────────
+// Validates the reset token and sets a new password.
+
+auth.post(
+  "/reset-password",
+  zValidator(
+    "json",
+    z.object({
+      token: z.string().min(1),
+      password: z.string().min(8, "Password must be at least 8 characters"),
+    }),
+  ),
+  async (c) => {
+    const { token, password } = c.req.valid("json");
+
+    const tokenHash = hashToken(token);
+
+    const record = await db.query.passwordResetTokens.findFirst({
+      where: eq(passwordResetTokens.tokenHash, tokenHash),
+    });
+
+    if (!record) {
+      return c.json({ error: "Invalid or expired reset link." }, 400);
+    }
+
+    if (new Date() > record.expiresAt) {
+      await db
+        .delete(passwordResetTokens)
+        .where(eq(passwordResetTokens.id, record.id));
+      return c.json(
+        { error: "This reset link has expired. Please request a new one." },
+        400,
+      );
+    }
+
+    // Update password
+    const passwordHash = await bcrypt.hash(password, 10);
+    await db
+      .update(users)
+      .set({ passwordHash, updatedAt: new Date() })
+      .where(eq(users.id, record.userId));
+
+    // Delete the used token
+    await db
+      .delete(passwordResetTokens)
+      .where(eq(passwordResetTokens.id, record.id));
+
+    // Revoke all existing sessions for security
+    await db
+      .delete(refreshTokens)
+      .where(eq(refreshTokens.userId, record.userId));
+
+    return c.json({
+      message: "Password updated successfully. You can now sign in.",
+    });
+  },
+);
+
+// ─── Reset password email builder ─────────────────────────────────────────────
+
+function buildResetEmail({
+  fullName,
+  resetUrl,
+}: {
+  fullName: string;
+  resetUrl: string;
+}): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <title>Reset your password</title>
+  <style>
+    body { margin:0; padding:0; background:#0a0f1e; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; }
+    .wrapper { max-width:520px; margin:0 auto; padding:40px 16px; }
+    .card { background:#0f172a; border:1px solid #1e293b; border-radius:16px; overflow:hidden; }
+    .section { padding:32px; }
+    @media only screen and (max-width:480px) {
+      .wrapper { padding:24px 12px; }
+      .section { padding:24px 20px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrapper">
+    <div style="text-align:center;margin-bottom:28px;">
+      <div style="font-size:28px;font-weight:900;letter-spacing:-0.02em;background:linear-gradient(135deg,#2563eb,#7c3aed);-webkit-background-clip:text;-webkit-text-fill-color:transparent;color:#7c3aed;">Billd</div>
+    </div>
+    <div class="card">
+      <div style="height:4px;background:linear-gradient(90deg,#2563eb,#7c3aed,#ec4899);"></div>
+      <div class="section">
+        <p style="font-size:22px;font-weight:700;color:#fff;margin:0 0 8px;">Reset your password</p>
+        <p style="font-size:15px;color:#64748b;margin:0 0 28px;line-height:1.6;">
+          Hi ${fullName}, we received a request to reset your Billd password. Click the button below — this link expires in <strong style="color:#94a3b8;">1 hour</strong>.
+        </p>
+        <div style="text-align:center;margin-bottom:28px;">
+          <a href="${resetUrl}"
+             style="display:inline-block;background:linear-gradient(135deg,#2563eb,#7c3aed);color:#fff;font-size:15px;font-weight:700;text-decoration:none;padding:14px 36px;border-radius:12px;">
+            Reset password
+          </a>
+        </div>
+        <p style="font-size:13px;color:#475569;line-height:1.6;margin:0;">
+          If you didn't request this, you can safely ignore this email — your password won't change.
+        </p>
+        <p style="font-size:12px;color:#334155;margin:20px 0 0;word-break:break-all;">
+          Or copy this link: <a href="${resetUrl}" style="color:#60a5fa;">${resetUrl}</a>
+        </p>
+      </div>
+    </div>
+    <p style="text-align:center;color:#334155;font-size:11px;margin-top:24px;">
+      Sent via <strong>Billd</strong> — Professional invoicing for freelancers
+    </p>
+  </div>
+</body>
+</html>`;
+}
 
 export default auth;
