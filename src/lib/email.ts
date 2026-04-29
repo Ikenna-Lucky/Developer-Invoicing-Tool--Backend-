@@ -37,8 +37,11 @@ export async function sendMail(opts: SendMailOptions): Promise<boolean> {
   // address (only delivers to your own Resend account email — good for testing).
   // Once you verify a custom domain in Resend, set EMAIL_FROM to e.g.:
   //   "Billd <invoices@yourdomain.com>"
-  const from =
-    opts.from ?? process.env.EMAIL_FROM ?? "Billd <onboarding@resend.dev>";
+  // Fall back to Resend's sandbox sender if no verified domain address is
+  // provided. EMAIL_FROM is intentionally excluded here — it holds a Gmail
+  // address for the SMTP / forgot-password flow and would be rejected by
+  // Resend's domain verification check.
+  const from = opts.from ?? "Billd <onboarding@resend.dev>";
 
   try {
     const client = getClient();
