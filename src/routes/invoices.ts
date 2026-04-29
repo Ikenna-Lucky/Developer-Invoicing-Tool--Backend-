@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
-import { eq, and, desc, ilike, or, sql } from "drizzle-orm";
+import { eq, and, desc, ilike, or, sql, isNull, isNotNull } from "drizzle-orm";
 import { db } from "../db";
 import { invoices, invoiceItems, clients, users } from "../db/schema";
 import { authMiddleware } from "../middleware/auth";
@@ -109,6 +109,7 @@ invoicesRouter.get("/", async (c) => {
     .where(
       and(
         eq(invoices.userId, userId),
+        isNull(invoices.deletedAt), // exclude soft-deleted
         status ? eq(invoices.status, status) : undefined,
         search
           ? or(
@@ -457,6 +458,46 @@ invoicesRouter.post("/:id/send", async (c) => {
   return c.json({ data: updated, message: "Invoice sent successfully" });
 });
 
+// ─── POST /invoices/:id/resend ────────────────────────────────────────────────
+// Re-sends the invoice email for any non-draft invoice (sent, paid, overdue).
+// Useful when the client claims they never received the original email.
+// Does NOT change the invoice status — just fires the email again.
+
+invoicesRouter.post("/:id/resend", async (c) => {
+  const userId = c.get("userId");
+  const invoiceId = c.req.param("id");
+
+  const invoice = await db.query.invoices.findFirst({
+    where: and(eq(invoices.id, invoiceId), eq(invoices.userId, userId)),
+    with: { client: true, items: true },
+  });
+
+  if (!invoice) return c.json({ error: "Invoice not found" }, 404);
+  if (invoice.status === "draft") {
+    return c.json(
+      { error: "Draft invoices must be sent first, not resent" },
+      400,
+    );
+  }
+
+  const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
+  if (!user) return c.json({ error: "User not found" }, 404);
+
+  const senderName = user.businessName ?? user.fullName;
+  const paymentLink = invoice.stripePaymentLink ?? null;
+
+  // Fire email in the background — same pattern as the send route
+  sendMail({
+    to: invoice.client.email,
+    subject: `Invoice ${invoice.invoiceNumber} from ${senderName} — ₦${Number(invoice.totalAmount).toLocaleString("en-NG")}`,
+    html: buildInvoiceEmail({ invoice, senderName, paymentLink }),
+  }).catch((err) => {
+    console.error("[resend] Background email failed:", err);
+  });
+
+  return c.json({ message: "Invoice resent successfully" });
+});
+
 // ─── Email builder ────────────────────────────────────────────────────────────
 
 type InvoiceWithRelations = typeof invoices.$inferSelect & {
@@ -521,102 +562,167 @@ function buildInvoiceEmail({
 
   return `<!DOCTYPE html>
 <html lang="en">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Invoice ${invoice.invoiceNumber}</title></head>
-<body style="margin:0;padding:0;background:#0a0f1e;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
-  <div style="max-width:600px;margin:0 auto;padding:40px 16px;">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <title>Invoice ${invoice.invoiceNumber}</title>
+  <style>
+    body { margin:0; padding:0; background:#0a0f1e; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; }
+    .wrapper { max-width:600px; margin:0 auto; padding:32px 16px; }
+    .card { background:#0f172a; border:1px solid #1e293b; border-radius:16px; overflow:hidden; }
+    .section { padding:24px 28px; border-bottom:1px solid #1e293b; }
+    .section:last-child { border-bottom:none; }
+    .label { font-size:11px; color:#475569; text-transform:uppercase; letter-spacing:0.1em; margin:0 0 5px; }
+    /* Meta row — two-column table so it works in all email clients */
+    .meta-table { width:100%; border-collapse:collapse; }
+    .meta-left { vertical-align:top; }
+    .meta-right { vertical-align:top; text-align:right; }
+    /* Line items */
+    .items-table { width:100%; border-collapse:collapse; }
+    .items-table th { padding:10px 12px; color:#475569; font-size:11px; text-transform:uppercase; letter-spacing:0.08em; font-weight:600; background:#0a0f1e; }
+    .items-table td { padding:11px 12px; font-size:13px; border-bottom:1px solid #1e293b; }
+    .col-desc { text-align:left; color:#e2e8f0; }
+    .col-qty  { text-align:right; color:#94a3b8; width:40px; }
+    .col-rate { text-align:right; color:#94a3b8; width:110px; font-family:monospace; }
+    .col-amt  { text-align:right; color:#e2e8f0; width:110px; font-family:monospace; font-weight:600; }
+    /* Total row */
+    .total-table { width:100%; border-collapse:collapse; }
+    .total-label { font-size:17px; font-weight:700; color:#fff; }
+    .total-amount { font-size:26px; font-weight:900; color:#fff; font-family:monospace; text-align:right; }
+    /* Pay button */
+    .pay-wrap { text-align:center; margin:28px 0 8px; }
+    .pay-btn { display:inline-block; background:linear-gradient(135deg,#2563eb,#7c3aed); color:#fff; font-size:16px; font-weight:700; text-decoration:none; padding:14px 36px; border-radius:12px; letter-spacing:0.01em; }
+    .pay-link { font-size:12px; color:#64748b; text-align:center; margin:6px 0 0; word-break:break-all; }
+    /* Mobile overrides */
+    @media only screen and (max-width:480px) {
+      .wrapper { padding:20px 10px !important; }
+      .section { padding:18px 16px !important; }
+      /* Stack meta left/right vertically */
+      .meta-left, .meta-right { display:block !important; width:100% !important; text-align:left !important; padding-bottom:12px !important; }
+      /* Hide Qty & Rate columns — show Description + Amount only */
+      .col-qty, .col-rate, .th-qty, .th-rate { display:none !important; }
+      .col-amt, .th-amt { width:auto !important; }
+      .items-table th, .items-table td { padding:9px 8px !important; }
+      .total-label { font-size:15px !important; }
+      .total-amount { font-size:20px !important; }
+      .pay-btn { display:block !important; padding:14px 16px !important; font-size:15px !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrapper">
 
     <!-- Header -->
-    <div style="text-align:center;margin-bottom:32px;">
-      <div style="display:inline-block;background:linear-gradient(135deg,#2563eb,#7c3aed);-webkit-background-clip:text;background-clip:text;color:#7c3aed;font-size:28px;font-weight:900;letter-spacing:-0.02em;">Billd</div>
-      <p style="color:#64748b;font-size:14px;margin:8px 0 0;">Invoice from <strong style="color:#94a3b8;">${senderName}</strong></p>
+    <div style="text-align:center;margin-bottom:28px;">
+      <div style="font-size:28px;font-weight:900;letter-spacing:-0.02em;background:linear-gradient(135deg,#2563eb,#7c3aed);-webkit-background-clip:text;-webkit-text-fill-color:transparent;color:#7c3aed;">Billd</div>
+      <p style="color:#64748b;font-size:13px;margin:6px 0 0;">Invoice from <strong style="color:#94a3b8;">${senderName}</strong></p>
     </div>
 
     <!-- Card -->
-    <div style="background:#0f172a;border:1px solid #1e293b;border-radius:16px;overflow:hidden;">
+    <div class="card">
 
       <!-- Top gradient bar -->
       <div style="height:4px;background:linear-gradient(90deg,#2563eb,#7c3aed,#ec4899);"></div>
 
-      <!-- Invoice meta -->
-      <div style="padding:32px 32px 24px;display:flex;justify-content:space-between;border-bottom:1px solid #1e293b;">
-        <div>
-          <p style="font-size:12px;color:#475569;text-transform:uppercase;letter-spacing:0.1em;margin:0 0 6px;">Invoice</p>
-          <p style="font-size:22px;font-weight:700;color:#fff;margin:0;font-family:monospace;">${invoice.invoiceNumber}</p>
-        </div>
-        <div style="text-align:right;">
-          <p style="font-size:12px;color:#475569;text-transform:uppercase;letter-spacing:0.1em;margin:0 0 4px;">Issued</p>
-          <p style="font-size:14px;color:#94a3b8;margin:0 0 12px;font-family:monospace;">${issueDate}</p>
-          <p style="font-size:12px;color:#475569;text-transform:uppercase;letter-spacing:0.1em;margin:0 0 4px;">Due</p>
-          <p style="font-size:14px;color:#f87171;margin:0;font-family:monospace;font-weight:600;">${dueDate}</p>
-        </div>
+      <!-- Invoice meta (table layout — reliable across all email clients) -->
+      <div class="section">
+        <table class="meta-table">
+          <tr>
+            <td class="meta-left">
+              <p class="label">Invoice</p>
+              <p style="font-size:22px;font-weight:700;color:#fff;margin:0;font-family:monospace;">${invoice.invoiceNumber}</p>
+            </td>
+            <td class="meta-right">
+              <p class="label">Issued</p>
+              <p style="font-size:13px;color:#94a3b8;margin:0 0 10px;font-family:monospace;">${issueDate}</p>
+              <p class="label">Due</p>
+              <p style="font-size:13px;color:#f87171;margin:0;font-family:monospace;font-weight:600;">${dueDate}</p>
+            </td>
+          </tr>
+        </table>
       </div>
 
       <!-- Bill To -->
-      <div style="padding:24px 32px;border-bottom:1px solid #1e293b;">
-        <p style="font-size:12px;color:#475569;text-transform:uppercase;letter-spacing:0.1em;margin:0 0 8px;">Bill To</p>
-        <p style="font-size:16px;font-weight:600;color:#e2e8f0;margin:0;">${invoice.client.name}</p>
-        ${invoice.client.companyName ? `<p style="font-size:14px;color:#64748b;margin:4px 0 0;">${invoice.client.companyName}</p>` : ""}
-        <p style="font-size:14px;color:#64748b;margin:4px 0 0;">${invoice.client.email}</p>
+      <div class="section">
+        <p class="label">Bill To</p>
+        <p style="font-size:15px;font-weight:600;color:#e2e8f0;margin:0;">${invoice.client.name}</p>
+        ${invoice.client.companyName ? `<p style="font-size:13px;color:#64748b;margin:3px 0 0;">${invoice.client.companyName}</p>` : ""}
+        <p style="font-size:13px;color:#64748b;margin:3px 0 0;">${invoice.client.email}</p>
       </div>
 
-      <!-- Line items table -->
+      <!-- Line items -->
       <div style="padding:0;">
-        <table style="width:100%;border-collapse:collapse;">
+        <table class="items-table">
           <thead>
             <tr style="background:#0a0f1e;">
-              <th style="padding:12px 16px;color:#475569;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;text-align:left;font-weight:600;">Description</th>
-              <th style="padding:12px 16px;color:#475569;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;text-align:right;font-weight:600;">Qty</th>
-              <th style="padding:12px 16px;color:#475569;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;text-align:right;font-weight:600;">Rate</th>
-              <th style="padding:12px 16px;color:#475569;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;text-align:right;font-weight:600;">Amount</th>
+              <th class="col-desc" style="text-align:left;">Description</th>
+              <th class="col-qty th-qty">Qty</th>
+              <th class="col-rate th-rate">Rate</th>
+              <th class="col-amt th-amt">Amount</th>
             </tr>
           </thead>
           <tbody>${itemRows}</tbody>
         </table>
       </div>
 
-      <!-- Total -->
-      <div style="padding:24px 32px;border-top:1px solid #1e293b;">
-        <div style="display:flex;justify-content:space-between;align-items:center;">
-          <span style="font-size:18px;font-weight:700;color:#fff;">Total Due</span>
-          <span style="font-size:28px;font-weight:900;color:#fff;font-family:monospace;">${fmt(invoice.totalAmount)}</span>
-        </div>
+      <!-- Total (table layout — no flex) -->
+      <div class="section" style="border-top:1px solid #1e293b;border-bottom:none;">
+        <table class="total-table">
+          <tr>
+            <td class="total-label">Total Due</td>
+            <td class="total-amount">${fmt(invoice.totalAmount)}</td>
+          </tr>
+        </table>
       </div>
 
       ${
         invoice.notes
           ? `
       <!-- Notes -->
-      <div style="padding:0 32px 24px;border-top:1px solid #1e293b;padding-top:20px;">
-        <p style="font-size:12px;color:#475569;text-transform:uppercase;letter-spacing:0.1em;margin:0 0 8px;">Notes</p>
-        <p style="font-size:14px;color:#64748b;margin:0;line-height:1.6;">${invoice.notes}</p>
-      </div>
-      `
+      <div class="section" style="border-top:1px solid #1e293b;border-bottom:none;">
+        <p class="label">Notes</p>
+        <p style="font-size:13px;color:#64748b;margin:0;line-height:1.6;">${invoice.notes}</p>
+      </div>`
           : ""
       }
+
     </div>
 
     <!-- Pay button -->
-    ${payButton}
-    ${payLink}
+    ${
+      paymentLink
+        ? `
+    <div class="pay-wrap">
+      <a href="${paymentLink}" class="pay-btn">Pay Now — ${fmt(invoice.totalAmount)}</a>
+    </div>
+    <p class="pay-link">Or copy this link: <a href="${paymentLink}" style="color:#60a5fa;">${paymentLink}</a></p>`
+        : ""
+    }
 
     <!-- Footer -->
-    <p style="text-align:center;color:#334155;font-size:12px;margin-top:32px;">
+    <p style="text-align:center;color:#334155;font-size:11px;margin-top:28px;">
       Sent via <strong>Billd</strong> — Professional invoicing for freelancers
     </p>
+
   </div>
 </body>
 </html>`;
 }
 
 // ─── DELETE /invoices/:id ─────────────────────────────────────────────────────
-// Deletes an invoice. Invoice items are cascade-deleted by the DB.
+// Soft-deletes an invoice by setting deletedAt. It moves to the Trash and can
+// be restored within 30 days. Nothing is permanently removed from the DB here.
 
 invoicesRouter.delete("/:id", async (c) => {
   const userId = c.get("userId");
   const invoiceId = c.req.param("id");
 
   const existing = await db.query.invoices.findFirst({
-    where: and(eq(invoices.id, invoiceId), eq(invoices.userId, userId)),
+    where: and(
+      eq(invoices.id, invoiceId),
+      eq(invoices.userId, userId),
+      isNull(invoices.deletedAt),
+    ),
   });
 
   if (!existing) {
@@ -624,10 +730,92 @@ invoicesRouter.delete("/:id", async (c) => {
   }
 
   await db
+    .update(invoices)
+    .set({ deletedAt: new Date(), updatedAt: new Date() })
+    .where(and(eq(invoices.id, invoiceId), eq(invoices.userId, userId)));
+
+  return c.json({ message: "Invoice moved to Trash" });
+});
+
+// ─── GET /invoices/trash ──────────────────────────────────────────────────────
+// Returns all soft-deleted invoices for this user (Trash view).
+
+invoicesRouter.get("/trash", async (c) => {
+  const userId = c.get("userId");
+
+  const results = await db
+    .select({
+      id: invoices.id,
+      invoiceNumber: invoices.invoiceNumber,
+      status: invoices.status,
+      issueDate: invoices.issueDate,
+      dueDate: invoices.dueDate,
+      totalAmount: invoices.totalAmount,
+      deletedAt: invoices.deletedAt,
+      clientId: invoices.clientId,
+      clientName: clients.name,
+      clientEmail: clients.email,
+    })
+    .from(invoices)
+    .leftJoin(clients, eq(invoices.clientId, clients.id))
+    .where(and(eq(invoices.userId, userId), isNotNull(invoices.deletedAt)))
+    .orderBy(desc(invoices.deletedAt));
+
+  return c.json({ data: results });
+});
+
+// ─── POST /invoices/:id/restore ───────────────────────────────────────────────
+// Restores a soft-deleted invoice back to the active list.
+
+invoicesRouter.post("/:id/restore", async (c) => {
+  const userId = c.get("userId");
+  const invoiceId = c.req.param("id");
+
+  const existing = await db.query.invoices.findFirst({
+    where: and(
+      eq(invoices.id, invoiceId),
+      eq(invoices.userId, userId),
+      isNotNull(invoices.deletedAt),
+    ),
+  });
+
+  if (!existing) {
+    return c.json({ error: "Invoice not found in Trash" }, 404);
+  }
+
+  await db
+    .update(invoices)
+    .set({ deletedAt: null, updatedAt: new Date() })
+    .where(and(eq(invoices.id, invoiceId), eq(invoices.userId, userId)));
+
+  return c.json({ message: "Invoice restored successfully" });
+});
+
+// ─── DELETE /invoices/:id/permanent ──────────────────────────────────────────
+// Permanently deletes an invoice that is already in the Trash.
+// This is irreversible — invoice items are cascade-deleted by the DB.
+
+invoicesRouter.delete("/:id/permanent", async (c) => {
+  const userId = c.get("userId");
+  const invoiceId = c.req.param("id");
+
+  const existing = await db.query.invoices.findFirst({
+    where: and(
+      eq(invoices.id, invoiceId),
+      eq(invoices.userId, userId),
+      isNotNull(invoices.deletedAt),
+    ),
+  });
+
+  if (!existing) {
+    return c.json({ error: "Invoice not found in Trash" }, 404);
+  }
+
+  await db
     .delete(invoices)
     .where(and(eq(invoices.id, invoiceId), eq(invoices.userId, userId)));
 
-  return c.json({ message: "Invoice deleted successfully" });
+  return c.json({ message: "Invoice permanently deleted" });
 });
 
 export default invoicesRouter;
