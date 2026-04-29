@@ -441,9 +441,12 @@ invoicesRouter.post("/:id/send", async (c) => {
   // client. Bun keeps the process alive to finish this work even after the
   // response is flushed — email delivery happens out-of-band.
   const senderName = user.businessName ?? user.fullName;
+  // Only set a custom From address when EMAIL_FROM is explicitly configured
+  // (i.e. a verified domain in Resend). Without it, email.ts falls back to
+  // Resend's sandbox address (onboarding@resend.dev) which is always valid.
   const fromAddress = process.env.EMAIL_FROM
     ? `${senderName} via Billd <${process.env.EMAIL_FROM}>`
-    : `${senderName} via Billd <${process.env.EMAIL_USER}>`;
+    : undefined;
 
   sendMail({
     from: fromAddress,
