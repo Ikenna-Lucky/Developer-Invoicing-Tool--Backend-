@@ -8,8 +8,6 @@ import { invoices, payments } from "../db/schema";
 
 const webhooksRouter = new Hono();
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
 interface PaystackChargeSuccessData {
   id: number;
   reference: string;
@@ -63,8 +61,6 @@ type PaystackEvent =
   | { event: "invoice.payment_failed"; data: PaystackInvoicePaymentFailedData }
   | { event: string; data: unknown };
 
-// ─── Signature Verification ────────────────────────────────────────────────────
-
 function verifyPaystackSignature(
   rawBody: string,
   signature: string,
@@ -76,14 +72,8 @@ function verifyPaystackSignature(
   return expectedHash === signature;
 }
 
-// ─── Event Handlers ───────────────────────────────────────────────────────────
-
-/**
- * charge.success
- * Fired when a customer completes a payment.
- * We look up the invoice via metadata.invoice_id, mark it as paid,
- * and record the payment in the payments table.
- */
+// Fired when a customer completes a payment. Looks up the invoice via
+// metadata.invoice_id, marks it paid, and records the payment.
 async function handleChargeSuccess(
   data: PaystackChargeSuccessData,
 ): Promise<void> {
@@ -97,7 +87,6 @@ async function handleChargeSuccess(
     return;
   }
 
-  // Look up the invoice
   const invoice = await db.query.invoices.findFirst({
     where: eq(invoices.id, invoiceId),
   });
@@ -107,13 +96,13 @@ async function handleChargeSuccess(
     return;
   }
 
-  // Idempotency: skip if already marked paid
+  // idempotency — skip if already marked paid
   if (invoice.status === "paid") {
     console.log("[Webhook] charge.success — invoice already paid:", invoiceId);
     return;
   }
 
-  // Check for duplicate payment record (same Paystack reference)
+  // skip duplicate events for the same Paystack reference
   const existingPayment = await db.query.payments.findFirst({
     where: eq(payments.stripePaymentId, data.reference),
   });
@@ -126,18 +115,14 @@ async function handleChargeSuccess(
     return;
   }
 
-  // Convert kobo → NGN
-  const amountPaid = (data.amount / 100).toFixed(2);
+  const amountPaid = (data.amount / 100).toFixed(2); // kobo → NGN
 
-  // Run both writes together
   await Promise.all([
-    // Mark invoice as paid
     db
       .update(invoices)
       .set({ status: "paid", updatedAt: new Date() })
       .where(eq(invoices.id, invoiceId)),
 
-    // Record the payment
     db.insert(payments).values({
       id: randomUUID(),
       invoiceId,
@@ -154,11 +139,8 @@ async function handleChargeSuccess(
   );
 }
 
-/**
- * transfer.success
- * Fired when a payout from your Paystack balance completes.
- * No invoice is affected; we just log it for your records.
- */
+// Fired when a payout from the Paystack balance completes. No invoice is
+// affected — just logged for now.
 async function handleTransferSuccess(
   data: PaystackTransferSuccessData,
 ): Promise<void> {
@@ -168,16 +150,11 @@ async function handleTransferSuccess(
       `${data.recipient?.name ?? "recipient"} (${data.recipient?.account_number ?? "N/A"}). ` +
       `Code: ${data.transfer_code}. Ref: ${data.reference}`,
   );
-  // You can extend this to notify yourself (e.g. send an internal email)
-  // or persist a transfers log table in the future.
+  // could notify ourselves here, or persist a transfers log table later
 }
 
-/**
- * invoice.payment_failed
- * Fired when a Paystack subscription invoice payment fails.
- * We log the failure. If you later add subscription support you can
- * extend this to flip the invoice to "overdue" or notify the client.
- */
+// Fired when a Paystack subscription invoice payment fails. Just logged for
+// now — extend to flip the invoice to "overdue" if subscriptions get added.
 async function handleInvoicePaymentFailed(
   data: PaystackInvoicePaymentFailedData,
 ): Promise<void> {
@@ -189,19 +166,14 @@ async function handleInvoicePaymentFailed(
       `Amount: ₦${amountNGN}. ` +
       `Subscription: ${data.subscription?.subscription_code ?? "N/A"}`,
   );
-  // Extend here: look up an invoice linked to this subscription and
-  // flip its status to "overdue", or fire a retry-payment email.
 }
 
-// ─── POST /webhooks/paystack ──────────────────────────────────────────────────
-// Receives all Paystack webhook events. Must return 200 quickly or Paystack
-// will retry. Signature is verified before any processing occurs.
-
+// POST /webhooks/paystack — must return 200 quickly or Paystack retries.
+// Signature is verified before anything else runs.
 webhooksRouter.post("/paystack", async (c) => {
-  // ── 1. Read raw body (needed before any JSON parsing for HMAC) ─────────────
+  // raw body is needed before JSON parsing for the HMAC check
   const rawBody = await c.req.text();
 
-  // ── 2. Verify Paystack signature ───────────────────────────────────────────
   const signature = c.req.header("x-paystack-signature");
   const secret = process.env.PAYSTACK_SECRET_KEY;
 
@@ -215,7 +187,6 @@ webhooksRouter.post("/paystack", async (c) => {
     return c.json({ error: "Invalid signature" }, 401);
   }
 
-  // ── 3. Parse event payload ─────────────────────────────────────────────────
   let payload: PaystackEvent;
   try {
     payload = JSON.parse(rawBody) as PaystackEvent;
@@ -226,7 +197,7 @@ webhooksRouter.post("/paystack", async (c) => {
   const { event, data } = payload;
   console.log(`[Webhook] Received event: ${event}`);
 
-  // ── 4. Dispatch to handler (non-blocking — always return 200 to Paystack) ──
+  // always return 200 to Paystack even if handling fails below
   try {
     switch (event) {
       case "charge.success":
@@ -247,11 +218,9 @@ webhooksRouter.post("/paystack", async (c) => {
         console.log(`[Webhook] Unhandled event type: ${event} — ignoring`);
     }
   } catch (err) {
-    // Log processing errors but still return 200 so Paystack doesn't retry
     console.error(`[Webhook] Error processing event "${event}":`, err);
   }
 
-  // ── 5. Acknowledge receipt ─────────────────────────────────────────────────
   return c.json({ received: true });
 });
 

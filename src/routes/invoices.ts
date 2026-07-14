@@ -13,8 +13,6 @@ const invoicesRouter = new Hono<{ Variables: Variables }>();
 
 invoicesRouter.use("*", authMiddleware);
 
-// ─── Zod Schemas ──────────────────────────────────────────────────────────────
-
 const lineItemSchema = z.object({
   description: z.string().min(1, "Description is required"),
   quantity: z.number().positive("Quantity must be positive"),
@@ -41,10 +39,8 @@ const updateStatusSchema = z.object({
   status: z.enum(["draft", "sent", "paid", "overdue"]),
 });
 
-// ─── Helper: Generate next invoice number ─────────────────────────────────────
 // Finds the highest existing invoice number for this user and increments it.
-// Result format: INV-0001, INV-0002, ... INV-9999
-
+// INV-0001, INV-0002, ... INV-9999
 async function generateInvoiceNumber(userId: string): Promise<string> {
   const existing = await db
     .select({ invoiceNumber: invoices.invoiceNumber })
@@ -56,7 +52,6 @@ async function generateInvoiceNumber(userId: string): Promise<string> {
     return "INV-0001";
   }
 
-  // Extract the numeric part from the last invoice number (e.g. "INV-0042" → 42)
   const numbers = existing
     .map((inv) => parseInt(inv.invoiceNumber.replace("INV-", ""), 10))
     .filter((n) => !isNaN(n));
@@ -65,16 +60,12 @@ async function generateInvoiceNumber(userId: string): Promise<string> {
   return `INV-${String(max + 1).padStart(4, "0")}`;
 }
 
-// ─── Helper: Calculate total from items ───────────────────────────────────────
-
 function calculateTotal(items: z.infer<typeof lineItemSchema>[]): number {
   return items.reduce((sum, item) => sum + item.quantity * item.rate, 0);
 }
 
-// ─── GET /invoices ────────────────────────────────────────────────────────────
-// Returns all invoices for the logged-in user with client info.
-// Supports ?status= filter and ?search= (matches invoice number or client name).
-
+// GET /invoices — all invoices for the logged-in user with client info,
+// supports ?status= and ?search= (invoice number or client name)
 invoicesRouter.get("/", async (c) => {
   const userId = c.get("userId");
   const status = c.req.query("status") as
@@ -85,7 +76,6 @@ invoicesRouter.get("/", async (c) => {
     | undefined;
   const search = c.req.query("search");
 
-  // Fetch invoices + join client name in one query using Drizzle's relational API
   const results = await db
     .select({
       id: invoices.id,
@@ -124,10 +114,8 @@ invoicesRouter.get("/", async (c) => {
   return c.json({ data: results });
 });
 
-// ─── GET /invoices/trash ──────────────────────────────────────────────────────
-// Returns all soft-deleted invoices for this user (Trash view).
-// IMPORTANT: must be defined before GET /:id so "trash" isn't treated as an ID.
-
+// GET /invoices/trash — soft-deleted invoices. Has to come before GET /:id
+// or "trash" gets matched as an invoice ID.
 invoicesRouter.get("/trash", async (c) => {
   const userId = c.get("userId");
 
@@ -152,9 +140,7 @@ invoicesRouter.get("/trash", async (c) => {
   return c.json({ data: results });
 });
 
-// ─── GET /invoices/:id ────────────────────────────────────────────────────────
-// Returns a single invoice with its line items and full client info.
-
+// GET /invoices/:id — single invoice with line items and client
 invoicesRouter.get("/:id", async (c) => {
   const userId = c.get("userId");
   const invoiceId = c.req.param("id");
@@ -174,14 +160,11 @@ invoicesRouter.get("/:id", async (c) => {
   return c.json({ data: invoice });
 });
 
-// ─── GET /invoices/:id/pdf ────────────────────────────────────────────────────
-// Generates and streams a PDF of the invoice as a file download.
-
+// GET /invoices/:id/pdf — streams the invoice as a PDF download
 invoicesRouter.get("/:id/pdf", async (c) => {
   const userId = c.get("userId");
   const invoiceId = c.req.param("id");
 
-  // Fetch invoice + relations
   const invoice = await db.query.invoices.findFirst({
     where: and(eq(invoices.id, invoiceId), eq(invoices.userId, userId)),
     with: { items: true, client: true },
@@ -189,7 +172,7 @@ invoicesRouter.get("/:id/pdf", async (c) => {
 
   if (!invoice) return c.json({ error: "Invoice not found" }, 404);
 
-  // Fetch sender info (needed for logo, business name, contact details)
+  // needed for logo, business name, contact details on the PDF
   const sender = await db.query.users.findFirst({
     where: eq(users.id, userId),
   });
@@ -212,14 +195,12 @@ invoicesRouter.get("/:id/pdf", async (c) => {
   }
 });
 
-// ─── POST /invoices ───────────────────────────────────────────────────────────
-// Creates a new invoice along with its line items in a transaction.
-
+// POST /invoices — creates the invoice and its line items in one transaction
+// so we never end up with an invoice that has no items or vice versa
 invoicesRouter.post("/", zValidator("json", createInvoiceSchema), async (c) => {
   const userId = c.get("userId");
   const body = c.req.valid("json");
 
-  // Verify the client belongs to this user
   const client = await db.query.clients.findFirst({
     where: and(eq(clients.id, body.clientId), eq(clients.userId, userId)),
   });
@@ -232,8 +213,6 @@ invoicesRouter.post("/", zValidator("json", createInvoiceSchema), async (c) => {
   const totalAmount = calculateTotal(body.items);
   const invoiceId = crypto.randomUUID();
 
-  // Use a transaction so the invoice and its items are always created together.
-  // If any part fails, everything rolls back — no orphaned invoices.
   await db.transaction(async (tx) => {
     await tx.insert(invoices).values({
       id: invoiceId,
@@ -259,7 +238,6 @@ invoicesRouter.post("/", zValidator("json", createInvoiceSchema), async (c) => {
     );
   });
 
-  // Return the full invoice with items and client
   const created = await db.query.invoices.findFirst({
     where: eq(invoices.id, invoiceId),
     with: { items: true, client: true },
@@ -271,9 +249,7 @@ invoicesRouter.post("/", zValidator("json", createInvoiceSchema), async (c) => {
   );
 });
 
-// ─── PUT /invoices/:id ────────────────────────────────────────────────────────
-// Updates an existing invoice. If items are provided, old items are replaced.
-
+// PUT /invoices/:id — if items are provided, old items are replaced wholesale
 invoicesRouter.put(
   "/:id",
   zValidator("json", updateInvoiceSchema),
@@ -290,7 +266,6 @@ invoicesRouter.put(
       return c.json({ error: "Invoice not found" }, 404);
     }
 
-    // If client is being changed, verify it belongs to this user
     if (body.clientId) {
       const client = await db.query.clients.findFirst({
         where: and(eq(clients.id, body.clientId), eq(clients.userId, userId)),
@@ -313,7 +288,6 @@ invoicesRouter.put(
         })
         .where(and(eq(invoices.id, invoiceId), eq(invoices.userId, userId)));
 
-      // Replace items if provided
       if (body.items) {
         await tx
           .delete(invoiceItems)
@@ -340,9 +314,7 @@ invoicesRouter.put(
   },
 );
 
-// ─── PATCH /invoices/:id/status ───────────────────────────────────────────────
-// Updates only the status of an invoice. Used for draft→sent, sent→paid, etc.
-
+// PATCH /invoices/:id/status — draft→sent, sent→paid, etc.
 invoicesRouter.patch(
   "/:id/status",
   zValidator("json", updateStatusSchema),
@@ -369,17 +341,13 @@ invoicesRouter.patch(
   },
 );
 
-// ─── POST /invoices/:id/send ──────────────────────────────────────────────────
-// Sends the invoice to the client via email.
-// Creates a Paystack payment link, marks invoice as "sent", returns immediately,
-// then fires the email in the background so Render's 90-second gateway can't
-// cut off the response mid-flight.
-
+// POST /invoices/:id/send — creates a Paystack payment link, marks the invoice
+// sent, and fires the email in the background so Render's 90s gateway timeout
+// can't cut the request off mid-send.
 invoicesRouter.post("/:id/send", async (c) => {
   const userId = c.get("userId");
   const invoiceId = c.req.param("id");
 
-  // ── Fetch invoice + client ────────────────────────────────────────────────
   const invoice = await db.query.invoices.findFirst({
     where: and(eq(invoices.id, invoiceId), eq(invoices.userId, userId)),
     with: { client: true, items: true },
@@ -390,13 +358,12 @@ invoicesRouter.post("/:id/send", async (c) => {
     return c.json({ error: "Only draft invoices can be sent" }, 400);
   }
 
-  // ── Fetch sender (the logged-in freelancer) ───────────────────────────────
   const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
   if (!user) return c.json({ error: "User not found" }, 404);
 
-  // ── 1. Generate Paystack payment link ─────────────────────────────────────
-  // Hard 8-second timeout so a slow/unresponsive Paystack API never hangs the
-  // entire request. Non-fatal — we send the email without a link if it fails.
+  // Generate the Paystack link with an 8s timeout so a slow/unresponsive
+  // Paystack never hangs the request — non-fatal, we just send without a
+  // link if it fails.
   let paymentLink: string | null = null;
 
   const paystackKey = process.env.PAYSTACK_SECRET_KEY;
@@ -405,8 +372,7 @@ invoicesRouter.post("/:id/send", async (c) => {
     const paystackTimeout = setTimeout(() => controller.abort(), 8_000);
 
     try {
-      // Paystack amounts are in kobo (1 NGN = 100 kobo)
-      const amountInKobo = Math.round(Number(invoice.totalAmount) * 100);
+      const amountInKobo = Math.round(Number(invoice.totalAmount) * 100); // 1 NGN = 100 kobo
 
       const paystackRes = await fetch(
         "https://api.paystack.co/transaction/initialize",
@@ -446,11 +412,9 @@ invoicesRouter.post("/:id/send", async (c) => {
     }
   }
 
-  // ── 2. Update invoice status + save payment link ──────────────────────────
-  // Do this BEFORE returning the response so the DB is always consistent even
-  // if the background email job fails. This also prevents the "double-send"
-  // bug where the gateway timeout causes the client to retry and the second
-  // request hits "Only draft invoices can be sent".
+  // Update the invoice before returning, so the DB stays consistent even if
+  // the background email fails, and so a gateway-timeout retry doesn't hit
+  // "Only draft invoices can be sent" on the second attempt.
   await db
     .update(invoices)
     .set({
@@ -465,14 +429,10 @@ invoicesRouter.post("/:id/send", async (c) => {
     with: { items: true, client: true },
   });
 
-  // ── 3. Fire email in the background (non-blocking) ────────────────────────
-  // We do NOT await this. The HTTP response is already on its way back to the
-  // client. Bun keeps the process alive to finish this work even after the
-  // response is flushed — email delivery happens out-of-band.
-  //
-  // We intentionally omit `from` here. email.ts defaults to the Resend sandbox
-  // sender (onboarding@resend.dev). Once you verify a custom domain in Resend,
-  // set RESEND_FROM="Billd <invoices@yourdomain.com>" and add it back here.
+  // Not awaited — the response is already on its way back, Bun keeps the
+  // process alive long enough to finish sending the email out-of-band.
+  // `from` is omitted so email.ts falls back to the Resend sandbox sender;
+  // set RESEND_FROM once a custom domain is verified.
   const senderName = user.businessName ?? user.fullName;
 
   sendMail({
@@ -486,11 +446,8 @@ invoicesRouter.post("/:id/send", async (c) => {
   return c.json({ data: updated, message: "Invoice sent successfully" });
 });
 
-// ─── POST /invoices/:id/resend ────────────────────────────────────────────────
-// Re-sends the invoice email for any non-draft invoice (sent, paid, overdue).
-// Useful when the client claims they never received the original email.
-// Does NOT change the invoice status — just fires the email again.
-
+// POST /invoices/:id/resend — re-sends the email for a non-draft invoice
+// without touching its status, for when a client says they never got it
 invoicesRouter.post("/:id/resend", async (c) => {
   const userId = c.get("userId");
   const invoiceId = c.req.param("id");
@@ -514,7 +471,6 @@ invoicesRouter.post("/:id/resend", async (c) => {
   const senderName = user.businessName ?? user.fullName;
   const paymentLink = invoice.stripePaymentLink ?? null;
 
-  // Fire email in the background — same pattern as the send route
   sendMail({
     to: invoice.client.email,
     subject: `Invoice ${invoice.invoiceNumber} from ${senderName} — ₦${Number(invoice.totalAmount).toLocaleString("en-NG")}`,
@@ -526,10 +482,7 @@ invoicesRouter.post("/:id/resend", async (c) => {
   return c.json({ message: "Invoice resent successfully" });
 });
 
-// ─── DELETE /invoices/:id ─────────────────────────────────────────────────────
-// Soft-deletes an invoice by setting deletedAt. It moves to the Trash and can
-// be restored within 30 days. Nothing is permanently removed from the DB here.
-
+// DELETE /invoices/:id — soft delete, moves to Trash, restorable for 30 days
 invoicesRouter.delete("/:id", async (c) => {
   const userId = c.get("userId");
   const invoiceId = c.req.param("id");
@@ -554,9 +507,7 @@ invoicesRouter.delete("/:id", async (c) => {
   return c.json({ message: "Invoice moved to Trash" });
 });
 
-// ─── POST /invoices/:id/restore ───────────────────────────────────────────────
-// Restores a soft-deleted invoice back to the active list.
-
+// POST /invoices/:id/restore
 invoicesRouter.post("/:id/restore", async (c) => {
   const userId = c.get("userId");
   const invoiceId = c.req.param("id");
@@ -581,10 +532,7 @@ invoicesRouter.post("/:id/restore", async (c) => {
   return c.json({ message: "Invoice restored successfully" });
 });
 
-// ─── DELETE /invoices/:id/permanent ──────────────────────────────────────────
-// Permanently deletes an invoice that is already in the Trash.
-// This is irreversible — invoice items are cascade-deleted by the DB.
-
+// DELETE /invoices/:id/permanent — irreversible, items cascade-delete via the DB
 invoicesRouter.delete("/:id/permanent", async (c) => {
   const userId = c.get("userId");
   const invoiceId = c.req.param("id");
@@ -608,8 +556,7 @@ invoicesRouter.delete("/:id/permanent", async (c) => {
   return c.json({ message: "Invoice permanently deleted" });
 });
 
-// ─── Email builder ────────────────────────────────────────────────────────────
-
+// invoice email template
 type InvoiceWithRelations = typeof invoices.$inferSelect & {
   client: typeof clients.$inferSelect;
   items: (typeof invoiceItems.$inferSelect)[];
@@ -696,19 +643,17 @@ function buildInvoiceEmail({
 <body>
   <div class="wrapper">
 
-    <!-- Header -->
+    <!-- header -->
     <div style="text-align:center;margin-bottom:28px;">
       <div style="font-size:28px;font-weight:900;letter-spacing:-0.02em;background:linear-gradient(135deg,#2563eb,#7c3aed);-webkit-background-clip:text;-webkit-text-fill-color:transparent;color:#7c3aed;">Billd</div>
       <p style="color:#64748b;font-size:13px;margin:6px 0 0;">Invoice from <strong style="color:#94a3b8;">${senderName}</strong></p>
     </div>
 
-    <!-- Card -->
     <div class="card">
 
-      <!-- Top gradient bar -->
       <div style="height:4px;background:linear-gradient(90deg,#2563eb,#7c3aed,#ec4899);"></div>
 
-      <!-- Invoice meta -->
+      <!-- invoice meta -->
       <div class="section">
         <table class="meta-table">
           <tr>
@@ -726,7 +671,7 @@ function buildInvoiceEmail({
         </table>
       </div>
 
-      <!-- Bill To -->
+      <!-- bill to -->
       <div class="section">
         <p class="label">Bill To</p>
         <p style="font-size:15px;font-weight:600;color:#e2e8f0;margin:0;">${invoice.client.name}</p>
@@ -734,7 +679,7 @@ function buildInvoiceEmail({
         <p style="font-size:13px;color:#64748b;margin:3px 0 0;">${invoice.client.email}</p>
       </div>
 
-      <!-- Line items -->
+      <!-- line items -->
       <div style="padding:0;">
         <table class="items-table">
           <thead>
@@ -749,7 +694,7 @@ function buildInvoiceEmail({
         </table>
       </div>
 
-      <!-- Total -->
+      <!-- total -->
       <div class="section" style="border-top:1px solid #1e293b;border-bottom:none;">
         <table class="total-table">
           <tr>
@@ -762,7 +707,7 @@ function buildInvoiceEmail({
       ${
         invoice.notes
           ? `
-      <!-- Notes -->
+      <!-- notes -->
       <div class="section" style="border-top:1px solid #1e293b;border-bottom:none;">
         <p class="label">Notes</p>
         <p style="font-size:13px;color:#64748b;margin:0;line-height:1.6;">${invoice.notes}</p>
@@ -772,7 +717,7 @@ function buildInvoiceEmail({
 
     </div>
 
-    <!-- Pay button -->
+    <!-- pay button -->
     ${
       paymentLink
         ? `
@@ -783,7 +728,7 @@ function buildInvoiceEmail({
         : ""
     }
 
-    <!-- Footer -->
+    <!-- footer -->
     <p style="text-align:center;color:#334155;font-size:11px;margin-top:28px;">
       Sent via <strong>Billd</strong> — Professional invoicing for freelancers
     </p>

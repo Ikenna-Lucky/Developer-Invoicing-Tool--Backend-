@@ -1,8 +1,6 @@
 import puppeteer, { type Page } from "puppeteer";
 import type { Invoice, InvoiceItem, Client, User } from "../db/schema";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
 type PDFInput = {
   invoice: Invoice & {
     client: Client;
@@ -10,8 +8,6 @@ type PDFInput = {
   };
   sender: User;
 };
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function fmtCurrency(n: number | string): string {
   return `₦${Number(n).toLocaleString("en-NG", {
@@ -28,8 +24,7 @@ function fmtDate(d: Date | string): string {
   });
 }
 
-// ─── Status colours ───────────────────────────────────────────────────────────
-
+// status pill colours
 const STATUS_STYLES: Record<
   string,
   { bg: string; color: string; label: string }
@@ -40,8 +35,6 @@ const STATUS_STYLES: Record<
   overdue: { bg: "rgba(220,38,38,.15)", color: "#f87171", label: "OVERDUE" },
 };
 
-// ─── HTML Template ────────────────────────────────────────────────────────────
-
 function buildHTML(input: PDFInput): string {
   const { invoice, sender } = input;
   const st = STATUS_STYLES[invoice.status] ?? STATUS_STYLES.draft;
@@ -51,12 +44,10 @@ function buildHTML(input: PDFInput): string {
   const subtotal = invoice.items.reduce((s, i) => s + Number(i.amount), 0);
   const senderName = sender.businessName ?? sender.fullName;
 
-  // ── Logo ─────────────────────────────────────────────────────────────────
   const logoHtml = sender.logoUrl
     ? `<img src="${sender.logoUrl}" alt="Logo" class="logo-img" />`
     : `<div class="logo-fallback">${senderName.slice(0, 2).toUpperCase()}</div>`;
 
-  // ── Line items ────────────────────────────────────────────────────────────
   const itemRows = invoice.items
     .map(
       (item, idx) => `
@@ -70,7 +61,6 @@ function buildHTML(input: PDFInput): string {
     )
     .join("");
 
-  // ── Payment link block ────────────────────────────────────────────────────
   const paymentBlock = invoice.stripePaymentLink
     ? `
     <div class="payment-box">
@@ -83,7 +73,6 @@ function buildHTML(input: PDFInput): string {
   `
     : "";
 
-  // ── Watermark ─────────────────────────────────────────────────────────────
   const watermark =
     isPaid || isOverdue
       ? `
@@ -91,12 +80,10 @@ function buildHTML(input: PDFInput): string {
   `
       : "";
 
-  // ── Sender info ───────────────────────────────────────────────────────────
   const senderDetails = [sender.address, sender.phone, sender.email]
     .filter(Boolean)
     .join("<br/>");
 
-  // ── Client company ────────────────────────────────────────────────────────
   const clientCompany = invoice.client.companyName
     ? `<span class="biz">${invoice.client.companyName}</span>`
     : "";
@@ -115,10 +102,10 @@ function buildHTML(input: PDFInput): string {
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <style>
-/* ── Reset ── */
+/* reset */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-/* ── Base ── */
+/* base */
 html, body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
   background: #fff;
@@ -127,7 +114,7 @@ html, body {
   print-color-adjust: exact;
 }
 
-/* ── Left accent bar ── */
+/* left accent bar */
 .accent-rail {
   position: fixed;
   left: 0; top: 0; bottom: 0;
@@ -136,7 +123,6 @@ html, body {
   z-index: 100;
 }
 
-/* ── Wrapper ── */
 .page {
   margin-left: 6px;
   min-height: 100vh;
@@ -144,7 +130,7 @@ html, body {
   flex-direction: column;
 }
 
-/* ── Header ── */
+/* header */
 .header {
   background: #0a0f1e;
   padding: 44px 52px 44px 46px;
@@ -156,7 +142,7 @@ html, body {
   gap: 24px;
 }
 
-/* Dot-grid texture */
+/* dot-grid texture */
 .header::before {
   content: "";
   position: absolute;
@@ -167,7 +153,7 @@ html, body {
   pointer-events: none;
 }
 
-/* Glow orbs */
+/* glow orb */
 .header::after {
   content: "";
   position: absolute;
@@ -189,7 +175,7 @@ html, body {
   flex-shrink: 0;
 }
 
-/* Logo */
+/* logo */
 .logo-img {
   width: 60px;
   height: 60px;
@@ -229,7 +215,7 @@ html, body {
   margin-top: 5px;
 }
 
-/* Invoice number */
+/* invoice number */
 .inv-word {
   color: rgba(255,255,255,0.28);
   font-size: 11px;
@@ -262,14 +248,14 @@ html, body {
   border: 1px solid ${st.color}40;
 }
 
-/* ── Gradient accent bar under header ── */
+/* gradient accent bar under header */
 .header-rule {
   height: 3px;
   background: linear-gradient(90deg, #2563eb, #7c3aed, #ec4899);
   margin-left: 6px;
 }
 
-/* ── Dates strip ── */
+/* dates strip */
 .dates-strip {
   background: #f8fafc;
   border-bottom: 1px solid #e2e8f0;
@@ -295,13 +281,13 @@ html, body {
 }
 .date-val.red { color: #dc2626; }
 
-/* ── Body ── */
+/* body */
 .body {
   padding: 44px 52px;
   flex: 1;
 }
 
-/* ── Billing ── */
+/* billing */
 .billing {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -357,7 +343,7 @@ html, body {
   margin-top: 10px;
 }
 
-/* ── Section heading ── */
+/* section heading */
 .section-head {
   display: flex;
   align-items: center;
@@ -378,7 +364,7 @@ html, body {
   white-space: nowrap;
 }
 
-/* ── Items table ── */
+/* items table */
 .items-wrap {
   border: 1px solid #e2e8f0;
   border-radius: 14px;
@@ -439,7 +425,7 @@ thead th:not(:first-child) { text-align: right; }
   white-space: nowrap;
 }
 
-/* ── Totals ── */
+/* totals */
 .totals-wrap {
   display: flex;
   justify-content: flex-end;
@@ -484,7 +470,7 @@ thead th:not(:first-child) { text-align: right; }
   letter-spacing: -0.02em;
 }
 
-/* ── Notes ── */
+/* notes */
 .notes-box {
   margin-top: 28px;
   border: 1px solid #fde68a;
@@ -506,7 +492,7 @@ thead th:not(:first-child) { text-align: right; }
   line-height: 1.75;
 }
 
-/* ── Payment box ── */
+/* payment box */
 .payment-box {
   margin-top: 28px;
   background: linear-gradient(135deg, rgba(37,99,235,0.05) 0%, rgba(124,58,237,0.05) 100%);
@@ -534,7 +520,7 @@ thead th:not(:first-child) { text-align: right; }
   word-break: break-all;
 }
 
-/* ── Watermark ── */
+/* watermark */
 .watermark {
   position: fixed;
   top: 48%;
@@ -550,7 +536,7 @@ thead th:not(:first-child) { text-align: right; }
 .watermark.paid    { color: rgba(22,163,74,0.055); }
 .watermark.overdue { color: rgba(220,38,38,0.055); }
 
-/* ── Footer ── */
+/* footer */
 .footer {
   background: #0a0f1e;
   padding: 22px 52px;
@@ -575,12 +561,12 @@ thead th:not(:first-child) { text-align: right; }
 
 ${watermark}
 
-<!-- Left gradient rail -->
+<!-- left gradient rail -->
 <div class="accent-rail"></div>
 
 <div class="page">
 
-  <!-- ── Header ── -->
+  <!-- header -->
   <div class="header">
     <div class="header-left">
       ${logoHtml}
@@ -594,10 +580,10 @@ ${watermark}
     </div>
   </div>
 
-  <!-- Gradient rule -->
+  <!-- gradient rule -->
   <div class="header-rule"></div>
 
-  <!-- ── Dates strip ── -->
+  <!-- dates strip -->
   <div class="dates-strip">
     <div class="date-block">
       <p class="date-lbl">Issue Date</p>
@@ -613,18 +599,18 @@ ${watermark}
     </div>
   </div>
 
-  <!-- ── Body ── -->
+  <!-- body -->
   <div class="body">
 
-    <!-- Billing cards -->
+    <!-- billing cards -->
     <div class="billing">
-      <!-- From -->
+      <!-- from -->
       <div class="billing-card">
         <p class="billing-tag">From</p>
         <p class="billing-name">${senderName}</p>
         ${senderDetails ? `<p class="billing-info">${senderDetails}</p>` : ""}
       </div>
-      <!-- To -->
+      <!-- to -->
       <div class="billing-card">
         <p class="billing-tag">Bill To</p>
         <p class="billing-name">${invoice.client.name}</p>
@@ -633,13 +619,13 @@ ${watermark}
       </div>
     </div>
 
-    <!-- Items section heading -->
+    <!-- items section heading -->
     <div class="section-head">
       <span class="section-label">Line Items</span>
       <div class="section-head-line"></div>
     </div>
 
-    <!-- Items table -->
+    <!-- items table -->
     <div class="items-wrap">
       <table>
         <thead>
@@ -654,7 +640,7 @@ ${watermark}
       </table>
     </div>
 
-    <!-- Totals -->
+    <!-- totals -->
     <div class="totals-wrap">
       <div class="totals-box">
         <div class="total-row">
@@ -675,7 +661,7 @@ ${watermark}
     ${
       invoice.notes
         ? `
-    <!-- Notes -->
+    <!-- notes -->
     <div class="notes-box">
       <p class="notes-lbl">Notes</p>
       <p class="notes-text">${invoice.notes}</p>
@@ -688,7 +674,7 @@ ${watermark}
 
   </div><!-- /body -->
 
-  <!-- ── Footer ── -->
+  <!-- footer -->
   <div class="footer">
     <p class="footer-left">Generated by <strong>Billd</strong> — Professional invoicing for freelancers</p>
     <p class="footer-right">${invoice.invoiceNumber} · ${new Date().toLocaleDateString("en-NG")}</p>
@@ -700,25 +686,19 @@ ${watermark}
 </html>`;
 }
 
-// ─── PDF Generator ────────────────────────────────────────────────────────────
-
 let _browser: Awaited<ReturnType<typeof puppeteer.launch>> | null = null;
 
 /**
- * Reuse a single Chromium browser across requests.
- *
- * Key production hardening:
- *  - executablePath is set explicitly so Render's Docker Chromium is always found
- *    (relying solely on the PUPPETEER_EXECUTABLE_PATH env var is unreliable).
- *  - --no-zygote + --single-process reduce memory footprint on Render's free tier
- *    (512 MB RAM). Without these, Chromium spawns extra zygote processes and can
- *    trigger an OOM kill, crashing the entire Bun process mid-request.
- *  - --disable-dev-shm-usage routes shared memory to /tmp instead of /dev/shm,
- *    which is typically too small (64 MB) inside Docker containers.
+ * Reuse a single Chromium browser across requests instead of launching a new
+ * one per PDF. executablePath is set explicitly since relying on the
+ * PUPPETEER_EXECUTABLE_PATH env var alone isn't reliable on Render's Docker
+ * image. --no-zygote and --single-process keep memory down on the 512MB free
+ * tier (Chromium's extra zygote processes can otherwise trigger an OOM kill),
+ * and --disable-dev-shm-usage routes shared memory to /tmp since /dev/shm is
+ * usually too small (64MB) inside containers.
  */
 async function getBrowser() {
   if (!_browser || !_browser.connected) {
-    // Use the env var set in the Dockerfile; fall back to the standard Debian path.
     const executablePath =
       process.env.PUPPETEER_EXECUTABLE_PATH ?? "/usr/bin/chromium";
 
@@ -731,7 +711,7 @@ async function getBrowser() {
         "--disable-dev-shm-usage",
         "--disable-gpu",
         "--no-zygote",
-        "--single-process", // critical: prevents extra Chromium sub-processes
+        "--single-process", // prevents extra Chromium sub-processes
         "--disable-extensions",
         "--disable-background-networking",
         "--disable-default-apps",
@@ -749,12 +729,12 @@ async function _generatePDF(html: string): Promise<Buffer> {
     const browser = await getBrowser();
     page = await browser.newPage();
 
-    // Disable unnecessary resource loading to keep memory usage low
+    // block remote image/font/media fetches to keep memory usage low, but
+    // allow data-URIs since logos come in as inline base64
     await page.setRequestInterception(true);
     page.on("request", (req) => {
       const type = req.resourceType();
       if (type === "image" || type === "font" || type === "media") {
-        // Allow data-URIs (inline images/logos) but block remote fetches
         if (req.url().startsWith("data:")) {
           req.continue();
         } else {
@@ -770,10 +750,10 @@ async function _generatePDF(html: string): Promise<Buffer> {
       timeout: 30_000,
     });
 
-    // Let CSS finish rendering
     await page.evaluate(() => document.fonts.ready);
 
-    // Measure actual content height for a content-driven page size
+    // measure actual content height so the PDF page fits the content instead
+    // of using a fixed page size
     const bodyHeight = await page.evaluate(() => {
       const body = document.querySelector(".page") as HTMLElement;
       return body ? body.scrollHeight : document.documentElement.scrollHeight;
@@ -788,8 +768,7 @@ async function _generatePDF(html: string): Promise<Buffer> {
 
     return Buffer.from(pdf);
   } catch (err) {
-    // Chromium crashed — reset the singleton so the retry (or next call)
-    // re-launches a fresh browser process
+    // reset the singleton so the next call re-launches a fresh browser
     if (_browser) {
       try {
         await _browser.close();
@@ -816,8 +795,8 @@ export async function generateInvoicePDF(input: PDFInput): Promise<Buffer> {
   try {
     return await _generatePDF(html);
   } catch (firstErr) {
-    // On Render's free tier (512 MB RAM) Chromium occasionally gets OOM-killed
-    // mid-render. The first attempt resets the browser singleton; retry once
+    // Chromium occasionally gets OOM-killed mid-render on Render's free tier.
+    // The first attempt resets the browser singleton above, so retry once
     // with a fresh process before giving up.
     console.warn("[pdf] First attempt failed, retrying once:", firstErr);
     try {
