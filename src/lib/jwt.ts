@@ -9,7 +9,7 @@ export interface JWTPayload {
   email: string;
 }
 
-// ─── Sign ─────────────────────────────────────────────────────────────────────
+// sign
 
 export async function signAccessToken(payload: JWTPayload): Promise<string> {
   return new SignJWT({ ...payload })
@@ -30,7 +30,7 @@ export async function signRefreshToken(
     .sign(refreshSecret);
 }
 
-// ─── Verify ───────────────────────────────────────────────────────────────────
+// verify
 
 export async function verifyAccessToken(token: string): Promise<JWTPayload> {
   const { payload } = await jwtVerify(token, accessSecret);
@@ -42,7 +42,7 @@ export async function verifyRefreshToken(token: string): Promise<JWTPayload> {
   return { sub: payload.sub as string, email: payload.email as string };
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// helpers
 
 /** Hash a refresh token before storing in DB (prevents exposure if DB leaks) */
 export function hashToken(token: string): string {

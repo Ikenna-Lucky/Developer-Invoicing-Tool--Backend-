@@ -8,7 +8,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 
-// ─── Enums ────────────────────────────────────────────────────────────────────
+// Enums
 export const invoiceStatusEnum = pgEnum("invoice_status", [
   "draft",
   "sent",
@@ -16,14 +16,13 @@ export const invoiceStatusEnum = pgEnum("invoice_status", [
   "overdue",
 ]);
 
-// ─── Users ────────────────────────────────────────────────────────────────────
+// Users
 export const users = pgTable("users", {
   id: text("id").primaryKey(),
   email: text("email").notNull().unique(),
-  // Nullable: Google-authenticated users have no password
+  // nullable — Google-authenticated users have no password
   passwordHash: text("password_hash"),
   fullName: text("full_name").notNull(),
-  // Populated when the user signs in with Google
   googleId: text("google_id").unique(),
   businessName: text("business_name"),
   logoUrl: text("logo_url"),
@@ -33,22 +32,19 @@ export const users = pgTable("users", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
-// ─── Refresh Tokens ───────────────────────────────────────────────────────────
-// Stored in DB so we can revoke individual sessions (logout, password change, etc.)
+// Refresh tokens — stored so individual sessions can be revoked (logout, password change, etc.)
 export const refreshTokens = pgTable("refresh_tokens", {
-  id: text("id").primaryKey(), // UUID
+  id: text("id").primaryKey(),
   userId: text("user_id")
     .notNull()
     .references(() => users.id, { onDelete: "cascade" }),
-  tokenHash: text("token_hash").notNull().unique(), // hashed refresh token
+  tokenHash: text("token_hash").notNull().unique(),
   expiresAt: timestamp("expires_at").notNull(),
   revoked: boolean("revoked").default(false).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
-// ─── Password Reset Tokens ────────────────────────────────────────────────────
-// Short-lived one-time tokens for the forgot-password flow.
-// We store only the SHA-256 hash so a DB leak doesn't expose valid tokens.
+// Password reset tokens — one-time use, we only store the hash
 export const passwordResetTokens = pgTable("password_reset_tokens", {
   id: text("id").primaryKey(),
   userId: text("user_id")
@@ -59,7 +55,7 @@ export const passwordResetTokens = pgTable("password_reset_tokens", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
-// ─── Clients ──────────────────────────────────────────────────────────────────
+// Clients
 export const clients = pgTable("clients", {
   id: text("id").primaryKey(),
   userId: text("user_id")
@@ -74,7 +70,7 @@ export const clients = pgTable("clients", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
-// ─── Invoices ─────────────────────────────────────────────────────────────────
+// Invoices
 export const invoices = pgTable("invoices", {
   id: text("id").primaryKey(),
   userId: text("user_id")
@@ -93,12 +89,11 @@ export const invoices = pgTable("invoices", {
   stripePaymentLink: text("stripe_payment_link"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
-  // Soft-delete: set to a timestamp when "deleted", null when active.
-  // Invoices stay in the DB for 30 days after deletion so they can be restored.
+  // soft delete — invoices stick around for 30 days after "deletion" so they can be restored
   deletedAt: timestamp("deleted_at"),
 });
 
-// ─── Invoice Items ────────────────────────────────────────────────────────────
+// Invoice items
 export const invoiceItems = pgTable("invoice_items", {
   id: text("id").primaryKey(),
   invoiceId: text("invoice_id")
@@ -111,7 +106,7 @@ export const invoiceItems = pgTable("invoice_items", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
-// ─── Payments ─────────────────────────────────────────────────────────────────
+// Payments
 export const payments = pgTable("payments", {
   id: text("id").primaryKey(),
   invoiceId: text("invoice_id")
@@ -123,10 +118,7 @@ export const payments = pgTable("payments", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
-// ─── Relations ────────────────────────────────────────────────────────────────
-// Drizzle needs explicit relation definitions to support the `with` syntax
-// in db.query.* calls (e.g. findFirst({ with: { items: true, client: true } }))
-
+// Relations — needed for the `with` syntax in db.query.* calls
 export const clientsRelations = relations(clients, ({ many }) => ({
   invoices: many(invoices),
 }));
@@ -153,7 +145,7 @@ export const paymentsRelations = relations(payments, ({ one }) => ({
   }),
 }));
 
-// ─── Inferred Types ───────────────────────────────────────────────────────────
+// Inferred types
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type RefreshToken = typeof refreshTokens.$inferSelect;

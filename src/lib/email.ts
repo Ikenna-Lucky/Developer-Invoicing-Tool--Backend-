@@ -1,6 +1,6 @@
 import { Resend } from "resend";
 
-// ─── Client (singleton) ───────────────────────────────────────────────────────
+// singleton client
 
 let _resend: Resend | null = null;
 
@@ -16,8 +16,6 @@ function getClient(): Resend {
   return _resend;
 }
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
 export interface SendMailOptions {
   to: string;
   subject: string;
@@ -26,21 +24,15 @@ export interface SendMailOptions {
   from?: string;
 }
 
-// ─── Public helper ────────────────────────────────────────────────────────────
-
 /**
  * Send a transactional email via Resend (HTTPS — works on Render free tier).
  * Returns true on success, false on failure (non-fatal — caller decides).
  */
 export async function sendMail(opts: SendMailOptions): Promise<boolean> {
-  // Default sender: use EMAIL_FROM env var if set, otherwise Resend's sandbox
-  // address (only delivers to your own Resend account email — good for testing).
-  // Once you verify a custom domain in Resend, set EMAIL_FROM to e.g.:
-  //   "Billd <invoices@yourdomain.com>"
-  // Fall back to Resend's sandbox sender if no verified domain address is
-  // provided. EMAIL_FROM is intentionally excluded here — it holds a Gmail
-  // address for the SMTP / forgot-password flow and would be rejected by
-  // Resend's domain verification check.
+  // EMAIL_FROM holds the Gmail address used for SMTP / forgot-password, which
+  // Resend's domain check would reject, so we skip it here and fall back to
+  // Resend's sandbox sender until a custom domain is verified, e.g.
+  // "Billd <invoices@yourdomain.com>"
   const from = opts.from ?? "Billd <onboarding@resend.dev>";
 
   try {

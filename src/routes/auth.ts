@@ -24,7 +24,7 @@ const REFRESH_COOKIE = "refresh_token";
 const ACCESS_COOKIE = "access_token";
 const IS_PROD = process.env.NODE_ENV === "production";
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// helpers
 
 function generateId(): string {
   return crypto.randomUUID();
@@ -34,9 +34,9 @@ function setAuthCookies(c: any, accessToken: string, refreshToken: string) {
   const cookieOptions = {
     httpOnly: true,
     secure: IS_PROD,
-    // SameSite=None is required for cross-site cookies (netlify.app → onrender.com).
-    // It MUST be paired with Secure=true, which is only true in production.
-    // In development (localhost), Lax is fine — everything is same-origin.
+    // SameSite=None is needed for cross-site cookies (netlify.app → onrender.com),
+    // and it has to be paired with Secure=true, which is only true in prod.
+    // Locally everything's same-origin so Lax is fine.
     sameSite: (IS_PROD ? "None" : "Lax") as "None" | "Lax",
     path: "/",
   };
@@ -56,7 +56,7 @@ function clearAuthCookies(c: any) {
   deleteCookie(c, REFRESH_COOKIE, { path: "/" });
 }
 
-// ─── POST /auth/register ──────────────────────────────────────────────────────
+// POST /auth/register
 auth.post(
   "/register",
   zValidator(
@@ -82,8 +82,7 @@ auth.post(
       );
     }
 
-    // Hash password — cost factor 10 is the Node.js recommended default
-    // (factor 12 adds ~300 ms of blocking CPU work with no meaningful security gain here)
+    // cost factor 10 — 12 adds ~300ms of blocking CPU with no real security gain here
     const passwordHash = await bcrypt.hash(password, 10);
     const userId = generateId();
 
@@ -133,7 +132,7 @@ auth.post(
   },
 );
 
-// ─── POST /auth/login ─────────────────────────────────────────────────────────
+// POST /auth/login
 auth.post(
   "/login",
   zValidator(
@@ -162,12 +161,12 @@ auth.post(
       );
     }
 
-    // Use constant-time comparison to prevent timing attacks
+    // constant-time comparison to avoid timing attacks
     if (!user || !(await bcrypt.compare(password, user.passwordHash!))) {
       return c.json({ error: "Invalid email or password" }, 401);
     }
 
-    // "Remember me" extends the refresh token from 7 days → 30 days
+    // "Remember me" extends the refresh token from 7 days to 30
     const refreshTTL = rememberMe
       ? "30d"
       : (process.env.JWT_REFRESH_EXPIRES_IN ?? "7d");
@@ -220,7 +219,7 @@ auth.post(
   },
 );
 
-// ─── POST /auth/refresh ───────────────────────────────────────────────────────
+// POST /auth/refresh
 auth.post("/refresh", async (c) => {
   const token = getCookie(c, REFRESH_COOKIE);
 
@@ -278,22 +277,18 @@ auth.post("/refresh", async (c) => {
   return c.json({ message: "Tokens refreshed" });
 });
 
-// ─── POST /auth/logout ────────────────────────────────────────────────────────
+// POST /auth/logout
 auth.post("/logout", async (c) => {
   const token = getCookie(c, REFRESH_COOKIE);
 
-  // ── Clear cookies FIRST ────────────────────────────────────────────────────
-  // This is the critical action. The response must carry the Set-Cookie
-  // headers that delete the session regardless of what happens to the DB below.
-  // Without this order, a Neon cold-start timeout on the DB call would throw
-  // a 500 before clearAuthCookies runs, leaving the browser with stale cookies
-  // and trapping the user in a redirect loop between /sign-in and /dashboard.
+  // Clear cookies first — this is what actually signs the user out. If a Neon
+  // cold-start makes the DB call below slow or throw, we don't want that to
+  // leave stale cookies around and trap the user in a sign-in/dashboard loop.
   clearAuthCookies(c);
 
-  // ── Revoke refresh token in DB — fire and forget ───────────────────────────
-  // Non-blocking: the DB update is best-effort. If Neon is cold or the update
-  // fails, the worst case is that the token sits in the DB until its natural
-  // 7-day expiry. The user is already signed out (cookies cleared above).
+  // Revoking the token in the DB is best-effort. If it fails, the token just
+  // sits there until it expires naturally in 7 days — the user's already
+  // signed out either way.
   if (token) {
     db.update(refreshTokens)
       .set({ revoked: true })
@@ -306,7 +301,7 @@ auth.post("/logout", async (c) => {
   return c.json({ message: "Logged out successfully" });
 });
 
-// ─── GET /auth/me ─────────────────────────────────────────────────────────────
+// GET /auth/me
 auth.get("/me", authMiddleware, async (c) => {
   const userId = c.get("userId");
 
@@ -325,8 +320,7 @@ auth.get("/me", authMiddleware, async (c) => {
   });
 });
 
-// ─── PATCH /auth/me ────────────────────────────────────────────────────────────
-// Update the current user's profile (fullName, phone, address, businessName, logoUrl/avatar)
+// PATCH /auth/me — update fullName, phone, address, businessName, logoUrl/avatar
 auth.patch(
   "/me",
   authMiddleware,
@@ -367,7 +361,7 @@ auth.patch(
   },
 );
 
-// ─── GET /auth/google — initiate OAuth flow ───────────────────────────────────
+// GET /auth/google — kick off OAuth flow
 auth.get("/google", (c) => {
   const clientId = process.env.GOOGLE_CLIENT_ID;
   if (!clientId) {
@@ -380,8 +374,8 @@ auth.get("/google", (c) => {
   const apiUrl = process.env.API_URL ?? "http://localhost:3001";
   const redirectUri = `${apiUrl}/auth/google/callback`;
 
-  // Random state value — stored in a short-lived httpOnly cookie so we can
-  // verify it in the callback (CSRF protection)
+  // random state, stashed in a short-lived cookie so we can verify it in the
+  // callback (CSRF protection)
   const state = crypto.randomUUID();
 
   setCookie(c, "oauth_state", state, {
@@ -407,7 +401,7 @@ auth.get("/google", (c) => {
   );
 });
 
-// ─── GET /auth/google/callback — handle Google's redirect back ────────────────
+// GET /auth/google/callback — handle Google's redirect back
 auth.get("/google/callback", async (c) => {
   const { code, state, error } = c.req.query();
 
@@ -418,7 +412,7 @@ auth.get("/google/callback", async (c) => {
   const apiUrl = process.env.API_URL ?? "http://localhost:3001";
   const redirectUri = `${apiUrl}/auth/google/callback`;
 
-  // ── Validation ────────────────────────────────────────────────────────────
+  // validation
 
   if (error === "access_denied") {
     return c.redirect(`${frontendUrl}/sign-in?error=google_denied`);
@@ -433,7 +427,7 @@ auth.get("/google/callback", async (c) => {
   }
 
   try {
-    // ── Exchange authorization code for access token ───────────────────────
+    // exchange the authorization code for an access token
 
     const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
       method: "POST",
@@ -456,7 +450,7 @@ auth.get("/google/callback", async (c) => {
       access_token: string;
     };
 
-    // ── Fetch the user's Google profile ───────────────────────────────────
+    // fetch the user's Google profile
 
     const profileRes = await fetch(
       "https://www.googleapis.com/oauth2/v2/userinfo",
@@ -481,16 +475,16 @@ auth.get("/google/callback", async (c) => {
       return c.redirect(`${frontendUrl}/sign-in?error=google_unverified_email`);
     }
 
-    // ── Find or create the Billd user account ─────────────────────────────
+    // find or create the account
 
     let user = await db.query.users.findFirst({
-      // Prefer matching by google_id (most precise), fall back to email
-      // so existing email/password accounts can be linked on first Google sign-in
+      // match by google_id if we can, otherwise fall back to email so existing
+      // email/password accounts get linked on first Google sign-in
       where: eq(users.email, googleUser.email.toLowerCase()),
     });
 
     if (user) {
-      // Link the Google ID to the existing account if not already linked
+      // link the Google ID to the existing account if not already linked
       if (!user.googleId) {
         await db
           .update(users)
@@ -499,7 +493,7 @@ auth.get("/google/callback", async (c) => {
         user = { ...user, googleId: googleUser.id };
       }
     } else {
-      // First time — create a brand-new Billd account from Google profile
+      // first time — create a new account from the Google profile
       const [newUser] = await db
         .insert(users)
         .values({
@@ -514,7 +508,7 @@ auth.get("/google/callback", async (c) => {
       user = newUser;
     }
 
-    // ── Issue Billd session tokens ─────────────────────────────────────────
+    // issue session tokens
 
     const accessToken = await signAccessToken({
       sub: user.id,
@@ -541,10 +535,8 @@ auth.get("/google/callback", async (c) => {
   }
 });
 
-// ─── POST /auth/forgot-password ───────────────────────────────────────────────
-// Generates a one-time reset token and emails a reset link to the user.
-// Always returns 200 regardless of whether the email exists (prevents enumeration).
-
+// POST /auth/forgot-password — issues a one-time reset token and emails a link.
+// Always returns 200 whether or not the email exists, so we don't leak that info.
 auth.post(
   "/forgot-password",
   zValidator("json", z.object({ email: z.string().email() })),
@@ -556,19 +548,18 @@ auth.post(
       where: eq(users.email, email.toLowerCase()),
     });
 
-    // Silent success — don't reveal whether the email exists
+    // silent success — don't reveal whether the email exists
     if (!user || !user.passwordHash) {
       return c.json({
         message: "If that email exists, a reset link has been sent.",
       });
     }
 
-    // Delete any existing tokens for this user (one active reset at a time)
+    // one active reset token per user at a time
     await db
       .delete(passwordResetTokens)
       .where(eq(passwordResetTokens.userId, user.id));
 
-    // Generate a cryptographically random 32-byte token
     const rawToken =
       crypto.randomUUID().replace(/-/g, "") +
       crypto.randomUUID().replace(/-/g, "");
@@ -596,9 +587,7 @@ auth.post(
   },
 );
 
-// ─── POST /auth/reset-password ────────────────────────────────────────────────
-// Validates the reset token and sets a new password.
-
+// POST /auth/reset-password — validates the token and sets the new password
 auth.post(
   "/reset-password",
   zValidator(
@@ -654,8 +643,7 @@ auth.post(
   },
 );
 
-// ─── Reset password email builder ─────────────────────────────────────────────
-
+// reset password email template
 function buildResetEmail({
   fullName,
   resetUrl,
