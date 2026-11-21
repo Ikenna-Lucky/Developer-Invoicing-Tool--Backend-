@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
+import { HTTPException } from "hono/http-exception";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
@@ -55,14 +56,12 @@ async function owner() {
   const userId = randomUUID(),
     clientId = randomUUID(),
     email = `${userId}@example.test`;
-  await database
-    .insert(schema.users)
-    .values({
-      id: userId,
-      email,
-      fullName: "Test Owner",
-      emailVerifiedAt: new Date(),
-    });
+  await database.insert(schema.users).values({
+    id: userId,
+    email,
+    fullName: "Test Owner",
+    emailVerifiedAt: new Date(),
+  });
   await database.insert(schema.clients).values({
     id: clientId,
     userId,
@@ -589,4 +588,125 @@ test("an email queue failure leaves an invoice editable instead of falsely issue
       "DROP TRIGGER fail_invoice_mail ON email_jobs; DROP FUNCTION fail_invoice_mail()",
     );
   }
+});
+
+test("PDF routes enforce verification, ownership, and Trash before invoking the renderer", async () => {
+  const account = await fixture(),
+    stranger = await owner();
+  let renders = 0;
+  const router = (
+    await import("../../src/routes/invoices")
+  ).createInvoicesRouter(database, async () => {
+    renders++;
+    return Buffer.from("%PDF-test");
+  });
+  expect(
+    (
+      await router.request(`/${account.invoice.id}/pdf`, {
+        headers: await headers(stranger),
+      })
+    ).status,
+  ).toBe(404);
+  await database
+    .update(schema.users)
+    .set({ emailVerifiedAt: null })
+    .where(eq(schema.users.id, account.userId));
+  expect(
+    (
+      await router.request(`/${account.invoice.id}/pdf`, {
+        headers: await headers(account),
+      })
+    ).status,
+  ).toBe(403);
+  await database
+    .update(schema.users)
+    .set({ emailVerifiedAt: new Date() })
+    .where(eq(schema.users.id, account.userId));
+  await database
+    .update(schema.invoices)
+    .set({ deletedAt: new Date() })
+    .where(eq(schema.invoices.id, account.invoice.id));
+  expect(
+    (
+      await router.request(`/${account.invoice.id}/pdf`, {
+        headers: await headers(account),
+      })
+    ).status,
+  ).toBe(404);
+  expect(renders).toBe(0);
+  await database
+    .update(schema.invoices)
+    .set({ deletedAt: null, invoiceNumber: 'INV"\r\nUnexpected: header' })
+    .where(eq(schema.invoices.id, account.invoice.id));
+  const response = await router.request(`/${account.invoice.id}/pdf`, {
+    headers: await headers(account),
+  });
+  expect(response.status).toBe(200);
+  expect(renders).toBe(1);
+  expect(response.headers.get("Content-Type")).toBe("application/pdf");
+  expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+  expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+  expect(response.headers.get("Content-Disposition")).not.toMatch(/[\r\n]/);
+  expect(await response.text()).toBe("%PDF-test");
+});
+
+test("PDF quotas are shared per account and do not affect another owner's downloads", async () => {
+  const account = await fixture();
+  let renders = 0;
+  const router = (
+    await import("../../src/routes/invoices")
+  ).createInvoicesRouter(database, async () => {
+    renders++;
+    return Buffer.from("%PDF-test");
+  });
+  const ownHeaders = await headers(account);
+  for (let n = 0; n < 10; n++)
+    expect(
+      (
+        await router.request(`/${account.invoice.id}/pdf`, {
+          headers: ownHeaders,
+        })
+      ).status,
+    ).toBe(200);
+  const blocked = await router.request(`/${account.invoice.id}/pdf`, {
+    headers: ownHeaders,
+  });
+  expect(blocked.status).toBe(429);
+  expect(Number(blocked.headers.get("Retry-After"))).toBeGreaterThan(0);
+  expect(renders).toBe(10);
+  const other = await fixture();
+  expect(
+    (
+      await router.request(`/${other.invoice.id}/pdf`, {
+        headers: await headers(other),
+      })
+    ).status,
+  ).toBe(200);
+});
+
+test("PDF limits, busy responses, and timeouts retain useful statuses without exposing failures", async () => {
+  const account = await fixture();
+  const ownHeaders = await headers(account);
+  for (const status of [422, 503, 504] as const) {
+    const router = (
+      await import("../../src/routes/invoices")
+    ).createInvoicesRouter(database, async () => {
+      throw new HTTPException(status, { message: "Safe PDF error" });
+    });
+    const response = await router.request(`/${account.invoice.id}/pdf`, {
+      headers: ownHeaders,
+    });
+    expect(response.status).toBe(status);
+    if (status === 503) expect(response.headers.get("Retry-After")).toBe("5");
+  }
+  const router = (
+    await import("../../src/routes/invoices")
+  ).createInvoicesRouter(database, async () => {
+    throw Error("private source URL and token");
+  });
+  const response = await router.request(`/${account.invoice.id}/pdf`, {
+    headers: ownHeaders,
+  });
+  expect(response.status).toBe(500);
+  expect(await response.text()).not.toContain("private source");
 });

@@ -47,6 +47,12 @@ jobs:
         run: bun run typecheck
       - name: Check token validation and webhook responses
         run: bun run test
+      - name: Check PDF rendering in Chromium
+        shell: bash
+        run: |
+          export PUPPETEER_EXECUTABLE_PATH="$(command -v google-chrome || command -v chromium)"
+          test -n "$PUPPETEER_EXECUTABLE_PATH"
+          bun run test:pdf
       - name: Check sessions, financial records, and migrations against PostgreSQL
         env:
           TEST_DATABASE_URL: postgresql://ci:ci@localhost:5432/billd_test

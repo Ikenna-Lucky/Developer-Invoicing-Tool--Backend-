@@ -1,0 +1,128 @@
+import { expect, test } from "bun:test";
+import type puppeteer from "puppeteer";
+import { buildInvoicePdfHtml, createInvoicePdfRenderer } from "../src/lib/pdf";
+import { safePdfLogo } from "../src/lib/pdf-logo";
+import { invoicePdfInput, pngLogo } from "./fixtures/pdf";
+
+test("invoice text is escaped in every PDF field", () => {
+  const input = invoicePdfInput();
+  const attack =
+    '<script>alert(1)</script><iframe src="http://127.0.0.1/private"></iframe>';
+  input.sender.fullName = attack;
+  input.sender.businessName = attack;
+  input.sender.address = attack;
+  input.sender.phone = attack;
+  input.sender.email = attack;
+  input.invoice.client.name = attack;
+  input.invoice.client.companyName = attack;
+  input.invoice.client.address = attack;
+  input.invoice.client.phone = attack;
+  input.invoice.client.email = attack;
+  input.invoice.invoiceNumber = attack;
+  input.invoice.notes = attack;
+  input.invoice.items[0].description = attack;
+  input.invoice.stripePaymentLink = attack;
+  const html = buildInvoicePdfHtml(input);
+  expect(html).not.toContain("<script>");
+  expect(html).not.toContain("<iframe");
+  expect(html.match(/&lt;script&gt;/g)?.length).toBeGreaterThanOrEqual(14);
+  expect(html).toContain("default-src 'none'");
+});
+
+test("logos never accept external, local, SVG, mismatched, malformed, or oversized sources", () => {
+  expect(safePdfLogo(pngLogo)).toBe(pngLogo);
+  for (const logo of [
+    "https://example.com/logo.png",
+    "http://169.254.169.254/latest/meta-data",
+    "file:///etc/passwd",
+    "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=",
+    "data:text/html;base64,PGh0bWw+",
+    pngLogo.replace("png", "jpeg"),
+    pngLogo + '" onerror="alert(1)',
+    "data:image/png;base64," + "A".repeat(800000),
+  ])
+    expect(safePdfLogo(logo)).toBeNull();
+  const large = Buffer.from(pngLogo.split(",")[1], "base64");
+  large.writeUInt32BE(999999, 16);
+  expect(
+    safePdfLogo(`data:image/png;base64,${large.toString("base64")}`),
+  ).toBeNull();
+  const animated = Buffer.concat([
+    large.subarray(0, 33),
+    Buffer.from([0, 0, 0, 0, 97, 99, 84, 76, 0, 0, 0, 0]),
+    large.subarray(33),
+  ]);
+  animated.writeUInt32BE(1, 16);
+  expect(
+    safePdfLogo(`data:image/png;base64,${animated.toString("base64")}`),
+  ).toBeNull();
+  const html = buildInvoicePdfHtml({
+    ...invoicePdfInput(),
+    sender: {
+      ...invoicePdfInput().sender,
+      logoUrl: "https://example.com/logo.png",
+    },
+  });
+  expect(html).not.toContain("<img");
+  expect(html).toContain("logo-fallback");
+});
+
+test("PDF input limits reject excessive rows and text before launching Chromium", async () => {
+  let launches = 0;
+  const render = createInvoicePdfRenderer({
+    launch: (async () => {
+      launches++;
+      throw Error("Should not launch");
+    }) as typeof puppeteer.launch,
+  });
+  const input = invoicePdfInput();
+  input.invoice.items = Array.from(
+    { length: 101 },
+    () => input.invoice.items[0],
+  );
+  await expect(render(input)).rejects.toThrow("exceeds PDF limits");
+  input.invoice.items = [];
+  input.invoice.notes = "a".repeat(100001);
+  await expect(render(input)).rejects.toThrow("exceeds PDF limits");
+  expect(launches).toBe(0);
+});
+
+test("a timed-out launch retains capacity until its late browser has been terminated", async () => {
+  let resolve!: (browser: unknown) => void;
+  let closed = 0,
+    killed = 0;
+  const launch = (() =>
+    new Promise<unknown>((value) => {
+      resolve = value;
+    })) as typeof puppeteer.launch;
+  const render = createInvoicePdfRenderer({ launch, timeoutMs: 20 });
+  await expect(render(invoicePdfInput())).rejects.toThrow("timed out");
+  await expect(render(invoicePdfInput())).rejects.toThrow("busy");
+  resolve({
+    close: async () => {
+      closed++;
+    },
+    process: () => ({
+      exitCode: null,
+      kill: () => {
+        killed++;
+      },
+    }),
+  });
+  await Bun.sleep(10);
+  expect(closed).toBe(1);
+  expect(killed).toBe(1);
+});
+
+test("launch failures release the renderer without automatic retry", async () => {
+  let launches = 0;
+  const render = createInvoicePdfRenderer({
+    launch: (async () => {
+      launches++;
+      throw Error("launch failed");
+    }) as typeof puppeteer.launch,
+  });
+  await expect(render(invoicePdfInput())).rejects.toThrow("launch failed");
+  await expect(render(invoicePdfInput())).rejects.toThrow("launch failed");
+  expect(launches).toBe(2);
+});

@@ -186,6 +186,51 @@ queue backpressure, hosted worker checks, and live inbox tests remain future wor
 
 Provider reference: [Resend idempotency keys](https://resend.com/docs/dashboard/emails/idempotency-keys).
 
+## PDF rendering safeguards
+
+Invoice PDFs escape user text before creating HTML. Chromium runs with page
+JavaScript disabled, a restrictive content security policy, and request
+interception that rejects every resource except the exact approved inline logo.
+Remote URLs, localhost, private addresses, file URLs, stylesheets, frames, fonts,
+and media are never fetched by the invoice page. Remote profile images remain
+stored for the frontend but appear as initials in PDFs, as before.
+
+PDF logos accept canonical base64 PNG or baseline/progressive JPEG only: at most
+512 KiB decoded, 2048 pixels per side, and four million pixels. PNG animation
+metadata, SVG, GIF, WebP, malformed headers, and unsupported sources fall back to
+initials. Header checks bound image dimensions; they are not a complete image
+validator or malware scan. Chromium still decodes the image.
+
+Each process allows one active render without queueing; competing requests return
+503 with `Retry-After: 5`. Each request launches a fresh browser and closes it
+before releasing capacity. The 20-second render deadline terminates the browser;
+launch and protocol calls have ten-second deadlines. Automatic render retries
+are removed. A late launch is closed before capacity is reused. Cleanup can add
+up to one second; OS-level process termination and resource limits still matter.
+This trades browser startup latency for isolated request state and bounded work.
+
+PDF limits are 100 line items, 100,000 UTF-8 bytes of invoice/profile text,
+1,500,000 bytes of rendered HTML, 20,000 pixels in height, and 5 MiB of output.
+Oversized invoices return 422 for PDF generation and remain stored unchanged.
+The download endpoint allows ten attempts per account per minute using the shared
+PostgreSQL limiter, after verification, ownership, and Trash checks. Busy or failed
+attempts count toward this quota. Throttles return 429 and `Retry-After` seconds;
+render timeouts return 504. Filenames are sanitized and downloads use private
+no-store caching and nosniff headers. Output limits do not cap peak browser memory.
+
+Run `bun run test` for validation and renderer lifecycle checks. Set
+`PUPPETEER_EXECUTABLE_PATH` to an installed Chromium/Chrome binary and run
+`bun run test:pdf` for real browser tests. CI now runs this browser suite and fails
+if a browser is unavailable. Local verification used Windows Chrome; Linux Docker
+and hosted CI execution remain unverified. No frontend or schema changes are
+required by this build.
+
+The existing container still uses Chromium without its sandbox. These application
+controls are not an OS security boundary: production should use a patched browser,
+restricted container permissions, resource/egress limits, and validated sandbox
+support. Capacity is per process, not a global browser pool. General API body
+limits, pagination, image normalization, and deployment load tests remain work.
+
 ## Deployment notes
 
 Session migration `0005_session_integrity` adds server-side session identifiers,
@@ -263,8 +308,7 @@ call payment and email services. Payment integration tests separately cover
 transactions, duplicate events, amount/currency mismatches, rollback, and signed
 webhook requests. Invoice tests cover numbering, exact totals, lifecycle rules,
 ownership boundaries, and concurrent requests. Session tests cover refresh, logout,
-password reset, concurrency, and migration. PDF rendering, OAuth, and browser
-workflows still need integration tests.
+password reset, concurrency, and migration. PDF security and lifecycle behavior also have real Chromium tests. OAuth and assembled browser workflows still need integration tests.
 
 Run `bun run test` for webhook and authentication validation checks. For integration tests, set
 `TEST_DATABASE_URL` to a disposable local database named `billd_test`, then run

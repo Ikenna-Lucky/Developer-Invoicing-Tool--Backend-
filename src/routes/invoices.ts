@@ -22,9 +22,13 @@ import { createAuthMiddleware } from "../middleware/auth";
 import { generateInvoicePDF } from "../lib/pdf";
 import { escapeEmailHtml } from "../lib/email";
 import { enqueueEmail } from "../lib/email-queue";
+import { consumeRateLimit } from "../middleware/rate-limit";
 import type { Variables } from "../types";
 
-export function createInvoicesRouter(database: DB = defaultDb) {
+export function createInvoicesRouter(
+  database: DB = defaultDb,
+  renderPdf = generateInvoicePDF,
+) {
   const db = database;
   const invoicesRouter = new Hono<{ Variables: Variables }>();
 
@@ -188,17 +192,31 @@ export function createInvoicesRouter(database: DB = defaultDb) {
     if (!sender) return c.json({ error: "User not found" }, 404);
 
     try {
-      const pdfBuffer = await generateInvoicePDF({ invoice, sender });
+      const quota = await consumeRateLimit(db, `invoice-pdf:${userId}`, 10, 60);
+      if (!quota.allowed) {
+        c.header("Retry-After", String(quota.retryAfter));
+        return c.json(
+          { error: "Too many PDF requests. Please try again later" },
+          429,
+        );
+      }
+      const pdfBuffer = await renderPdf({ invoice, sender });
 
-      const filename = `${invoice.invoiceNumber}.pdf`;
+      const filename = `${invoice.invoiceNumber.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80) || "invoice"}.pdf`;
 
       return c.body(new Uint8Array(pdfBuffer), 200, {
         "Content-Type": "application/pdf",
         "Content-Disposition": `attachment; filename="${filename}"`,
         "Content-Length": pdfBuffer.length.toString(),
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
       });
     } catch (err) {
-      console.error("PDF generation error:", err);
+      if (err instanceof HTTPException) {
+        if (err.status === 503) c.header("Retry-After", "5");
+        return c.json({ error: err.message }, err.status);
+      }
+      console.error("PDF generation failed");
       return c.json({ error: "Failed to generate PDF" }, 500);
     }
   });

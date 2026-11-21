@@ -64,8 +64,8 @@ database failures verify error responses; external email/OAuth and browser flows
 remain unverified. Only disposable databases were migrated.
 
 On 21 November 2026, TypeScript checking passed for source, scripts, and tests.
-The workflow YAML parsed successfully. Native Bun 1.4.5 passed 99 tests:
-16 webhook/authentication/email checks and 83 PostgreSQL integration tests, with no skips.
+The workflow YAML parsed successfully. Native Bun 1.4.5 passed 107 unit/database tests plus five real Chromium tests:
+21 webhook/authentication/email/PDF checks and 86 PostgreSQL integration tests, with no skips.
 
 Initial execution used Node 24 with a temporary compatibility adapter. The final
 run used a portable Bun 1.4.5 binary verified against the npm package integrity
@@ -148,6 +148,37 @@ not auto-verify them. Browser E2E, actual inbox receipt, deployed keys/queue wor
 provider reconciliation, retention, backpressure, alerting, and bounce tracking
 remain unverified or missing. See README for configuration and rollout details.
 
+## PDF security changes
+
+Invoice HTML escapes every user-controlled text field. The page disables
+JavaScript and service workers, uses restrictive CSP, and aborts all resource
+requests except the validated inline PNG/JPEG logo. Remote logos retain the
+existing initials fallback. Logo bytes/dimensions, invoice text/rows, HTML size,
+rendered height, PDF output, render duration, and concurrency are bounded. Fresh
+browser processes remove cross-request page state; no automatic retry doubles
+expensive work. The account download quota persists in PostgreSQL. Ownership,
+verification, and Trash checks precede quota/render work; response filenames and
+cache/content-type headers are hardened.
+
+Five real Windows Chrome tests exercised literal malicious text, logo decoding,
+request interception against a local HTTP sentinel even with CSP bypassed,
+concurrent rejection, browser cleanup, and deadline recovery. Height/output guards
+use injected browser measurements/output while retaining a real browser. Unit
+tests cover invalid logo protocols, malformed/oversized/animated image headers,
+text/row limits, late launches, and failure recovery. PostgreSQL HTTP tests cover
+ownership, verification, Trash, shared account quota, download headers, and error
+statuses; their PDF output is injected. The rendered malicious-content screenshot
+was visually inspected: content remained literal and the invoice layout readable.
+TypeScript and API smoke checks passed. CI includes the real Chromium suite;
+hosted CI and Linux container execution have not been verified.
+
+No frontend, migration, deployment, or production data changes were made. Header
+checks are not full image normalization. Chromium still runs without its sandbox,
+and browser/OS/container resource limits, egress policy, dependency patching,
+large-workload verification, general request limits, and pagination remain release
+work. Limits bound application work, not peak memory or every browser failure.
+See README for exact limits and compatibility behavior.
+
 ## Remaining controls
 
 | Area | Status and next work |
@@ -157,13 +188,13 @@ remain unverified or missing. See README for configuration and rollout details.
 | Threats (PR-03) | Planned: document abuse and failure cases across authentication, payments, PDFs, and external services. |
 | Identity and sessions (PR-04/05) | Atomic reset/refresh, unique tokens, consistent deadlines, and server-side revocation implemented and tested. Shared IP/account rate limits are tested. Email verification and account gates are tested. Deployed proxy validation, replay escalation policy, and browser verification remain. |
 | Ownership (PR-06) | Cross-user invoice read/edit/send/delete and client selection tests passed. Wider auth/client workflows remain. Team roles are outside the current individual-user model. |
-| API security (PR-07) | Exact origin CSRF checks and bounded authentication bodies implemented/tested. Template escaping, URL restrictions, wider resource limits, and configuration checks remain. |
+| API security (PR-07) | Exact origin CSRF checks and bounded authentication bodies implemented/tested. PDF escaping, network denial, logo validation, and render limits are tested. Wider request limits and configuration checks remain. |
 | Privacy and retention (PR-08) | Planned: account export/deletion, retention rules, and redacted operational logs. |
 | Data correctness (PR-09) | Payment, numbering, rounding, deletion, and forward migration tests passed natively. Existing-data reconciliation, offline payment history, and identity snapshots remain. |
 | Integrations/jobs (PR-10) | Durable encrypted email jobs, provider acceptance state, retries, and timeouts are tested locally. Hosted workers, live provider delivery, backpressure, and payment reconciliation remain. |
-| Tests (PR-11) | Financial, invoice isolation, session, and migration regressions passed. OAuth, PDFs, provider sandboxes, and assembled frontend/API journeys remain. |
+| Tests (PR-11) | Financial, invoice isolation, session, and migration regressions passed. Real PDF security tests passed; live OAuth, provider sandboxes, and assembled frontend/API journeys remain. |
 | UX/contracts (PR-12) | Frontend edit/delete affordances and client-deletion copy need updates for the new 409 responses. Browser flows, session expiry, and accessible recovery remain unverified. |
-| Performance/resilience (PR-13/14) | Missing: pagination and PDF concurrency limits. Workload targets, shutdown, and recovery tests remain undefined. |
+| Performance/resilience (PR-13/14) | PDF concurrency/deadline/size limits implemented and tested; pagination remains. Workload targets, shutdown, and recovery tests remain undefined. |
 | Builds/infrastructure (PR-15/16) | CI exists; hosted execution, scans, runtime pinning, environment isolation, and deployed secrets/config remain unverified. |
 | Delivery (PR-17) | Docker migration packaging/startup updated but image unverified. Coordinated migration rollout, enforced merge/deploy gates, and rollback rehearsal remain. |
 | Observability/audit (PR-18) | Console logging exists; request IDs, redaction, alerts, and financial/security audit history remain. |
