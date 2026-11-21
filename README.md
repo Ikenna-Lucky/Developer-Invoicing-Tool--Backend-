@@ -117,13 +117,27 @@ All routes except `/health` and `/auth/*` require an authenticated session (acce
 
 GitHub Actions runs `.github/workflows/ci.yml` on pushes to `main` and
 `dev-branch`, on pull requests, and when started manually. It installs the locked
-dependencies, checks TypeScript, starts the API for smoke checks, and builds the
-Docker image. Failures and their logs appear in the repository's Actions tab.
+dependencies, checks TypeScript, runs payment tests against PostgreSQL 16,
+starts the API for smoke checks, and builds the Docker image. Failures and their
+logs appear in the repository's Actions tab.
 
 The smoke checks cover liveness, unauthenticated client access, and unsigned
 Paystack events. They use dummy credentials and do not connect to a database or
-call payment and email services. Database workflows and PDF rendering still need
-integration tests.
+call payment and email services. Payment integration tests separately cover
+transactions, duplicate events, amount/currency mismatches, rollback, and signed
+webhook requests. Other database workflows and PDF rendering still need tests.
+
+Run `bun run test` for webhook boundary checks. For integration tests, set
+`TEST_DATABASE_URL` to an empty, disposable local database named `billd_test`,
+then run `bun run test:integration`. The suite applies the SQL migration files
+in filename order and leaves the test data in that database. It does not verify
+the migration journal or production upgrade path. Do not use a live database.
+
+Payment handling currently supports full NGN payments. A successful event must
+match the invoice total. Duplicate references are acknowledged after checking
+the existing payment; conflicting amounts, currencies, or additional payment
+references return 422 for investigation. Database failures return 500 so
+Paystack can retry. There is no automatic refund or reconciliation workflow.
 
 After the first successful run, require `Typecheck and smoke checks` and
 `Docker build` in the branch protection rules for `main`. This workflow does not
