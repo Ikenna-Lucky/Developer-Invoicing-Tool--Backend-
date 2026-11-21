@@ -1,0 +1,68 @@
+name: Backend CI
+
+on:
+  push:
+    branches: [main, dev-branch]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Typecheck and smoke checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PUPPETEER_SKIP_DOWNLOAD: "true"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.5"
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Check types
+        run: bun run typecheck
+      - name: Check API startup and public boundaries
+        env:
+          NODE_ENV: test
+          PORT: "3001"
+          DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/billd_ci
+          JWT_ACCESS_SECRET: ci-access-secret-for-smoke-checks-only
+          JWT_REFRESH_SECRET: ci-refresh-secret-for-smoke-checks-only
+          PAYSTACK_SECRET_KEY: ci-paystack-secret-for-smoke-checks-only
+        shell: bash
+        run: |
+          bun run src/index.ts > /tmp/billd-api.log 2>&1 &
+          api_pid=$!
+          trap 'kill "$api_pid" 2>/dev/null || true; cat /tmp/billd-api.log' EXIT
+
+          for attempt in {1..30}; do
+            if curl --fail --silent http://localhost:3001/health > /dev/null; then
+              break
+            fi
+            kill -0 "$api_pid"
+            sleep 1
+          done
+
+          bun run scripts/smoke.ts
+
+  docker:
+    name: Docker build
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Build the deployment image
+        run: docker build --tag billd-api:ci .

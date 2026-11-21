@@ -115,4 +115,19 @@ All routes except `/health` and `/auth/*` require an authenticated session (acce
 
 ## Deployment notes
 
+GitHub Actions runs `.github/workflows/ci.yml` on pushes to `main` and
+`dev-branch`, on pull requests, and when started manually. It installs the locked
+dependencies, checks TypeScript, starts the API for smoke checks, and builds the
+Docker image. Failures and their logs appear in the repository's Actions tab.
+
+The smoke checks cover liveness, unauthenticated client access, and unsigned
+Paystack events. They use dummy credentials and do not connect to a database or
+call payment and email services. Database workflows and PDF rendering still need
+integration tests.
+
+After the first successful run, require `Typecheck and smoke checks` and
+`Docker build` in the branch protection rules for `main`. This workflow does not
+deploy the API or capture errors from the running service. Deployment gating and
+runtime error monitoring must be configured with the hosting service.
+
 Puppeteer needs a Chromium binary at runtime — set `PUPPETEER_EXECUTABLE_PATH` in production (this project targets Render's free tier, which is why the browser launch args are tuned for low memory).
