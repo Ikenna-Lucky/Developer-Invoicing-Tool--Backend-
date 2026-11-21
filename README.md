@@ -352,3 +352,8 @@ coordinated rollout; application rollback alone does not undo the migration.
 Only disposable test databases have been migrated during development.
 
 Puppeteer needs a Chromium binary at runtime — set `PUPPETEER_EXECUTABLE_PATH` in production (this project targets Render's free tier, which is why the browser launch args are tuned for low memory).
+
+Runtime logs now use JSON events and server-generated request IDs. Optional
+`SENTRY_DSN` enables redacted backend error reporting; migration 0008 records
+transactional audit history. See [monitoring setup and audit limits](docs/monitoring.md)
+for Render configuration, the manual verification command, and remaining controls.

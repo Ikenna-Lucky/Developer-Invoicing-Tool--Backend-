@@ -1,3 +1,4 @@
+import { reportError } from "../lib/observability";
 import { Hono, type Context } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
@@ -145,7 +146,7 @@ export function createAuthRouter(
     try {
       if (token) await revokeSession(db, token);
     } catch (error) {
-      console.error("Session revocation failed:", error);
+      reportError("session.revocation_failed", error);
       return c.json(
         { error: "Could not revoke the session. Please try again." },
         503,
@@ -303,7 +304,7 @@ export function createAuthRouter(
       );
 
       if (!tokenRes.ok) {
-        console.error("Google token exchange failed:", await tokenRes.text());
+        reportError("oauth.exchange_failed");
         return c.redirect(`${frontendUrl}/sign-in?error=google_token_failed`);
       }
 
@@ -393,7 +394,7 @@ export function createAuthRouter(
 
       return c.redirect(`${frontendUrl}/dashboard`);
     } catch (err) {
-      console.error("Google OAuth callback error:", err);
+      reportError("oauth.callback_failed", err);
       return c.redirect(`${frontendUrl}/sign-in?error=google_auth_failed`);
     }
   });

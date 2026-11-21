@@ -1,3 +1,4 @@
+import { reportError } from "../lib/observability";
 import { Hono } from "hono";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
@@ -8,36 +9,6 @@ import {
   PaymentConflict,
   recordPaystackPayment,
 } from "../lib/payments";
-
-interface PaystackTransferSuccessData {
-  id: number;
-  amount: number; // in kobo
-  reference: string;
-  transfer_code: string;
-  status: string;
-  reason: string;
-  currency: string;
-  transferred_at: string;
-  recipient: {
-    name: string;
-    account_number: string;
-    bank_name: string;
-  };
-}
-
-interface PaystackInvoicePaymentFailedData {
-  domain: string;
-  invoice_code: string;
-  amount: number; // in kobo
-  period_start: string;
-  period_end: string;
-  subscription: {
-    status: string;
-    subscription_code: string;
-    email_token: string;
-  };
-  customer: { email: string };
-}
 
 function verifyPaystackSignature(
   rawBody: string,
@@ -54,33 +25,6 @@ function verifyPaystackSignature(
   );
 }
 
-// Fired when a payout from the Paystack balance completes. No invoice is
-// affected — just logged for now.
-async function handleTransferSuccess(
-  data: PaystackTransferSuccessData,
-): Promise<void> {
-  const amountNGN = (data.amount / 100).toFixed(2);
-  console.log(
-    `[Webhook] transfer.success — ₦${amountNGN} transferred to ` +
-      `${data.recipient?.name ?? "recipient"} (${data.recipient?.account_number ?? "N/A"}). ` +
-      `Code: ${data.transfer_code}. Ref: ${data.reference}`,
-  );
-}
-
-// Subscription payment failures are logged without changing Billd invoices.
-async function handleInvoicePaymentFailed(
-  data: PaystackInvoicePaymentFailedData,
-): Promise<void> {
-  const amountNGN = (data.amount / 100).toFixed(2);
-  console.warn(
-    `[Webhook] invoice.payment_failed — ` +
-      `Customer: ${data.customer?.email ?? "unknown"}. ` +
-      `Invoice code: ${data.invoice_code}. ` +
-      `Amount: ₦${amountNGN}. ` +
-      `Subscription: ${data.subscription?.subscription_code ?? "N/A"}`,
-  );
-}
-
 export function createWebhooksRouter(database: DB = db) {
   const webhooksRouter = new Hono();
 
@@ -94,12 +38,11 @@ export function createWebhooksRouter(database: DB = db) {
     const secret = process.env.PAYSTACK_SECRET_KEY;
 
     if (!secret) {
-      console.error("[Webhook] PAYSTACK_SECRET_KEY is not set");
+      reportError("paystack.not_configured");
       return c.json({ error: "Webhook not configured" }, 500);
     }
 
     if (!signature || !verifyPaystackSignature(rawBody, signature, secret)) {
-      console.warn("[Webhook] Invalid signature — possible spoofed request");
       return c.json({ error: "Invalid signature" }, 401);
     }
 
@@ -114,7 +57,6 @@ export function createWebhooksRouter(database: DB = db) {
     }
 
     const { event, data } = payload;
-    console.log(`[Webhook] Received event: ${event}`);
 
     try {
       switch (event) {
@@ -122,29 +64,18 @@ export function createWebhooksRouter(database: DB = db) {
           const charge = paystackChargeSchema.safeParse(data);
           if (!charge.success)
             return c.json({ error: "Invalid charge payload" }, 400);
-          const result = await recordPaystackPayment(database, charge.data);
-          console.log(`[Webhook] charge.success: ${result}`);
+          await recordPaystackPayment(database, charge.data);
           break;
         }
 
-        case "transfer.success":
-          await handleTransferSuccess(data as PaystackTransferSuccessData);
-          break;
-
-        case "invoice.payment_failed":
-          await handleInvoicePaymentFailed(
-            data as PaystackInvoicePaymentFailedData,
-          );
-          break;
-
         default:
-          console.log(`[Webhook] Unhandled event type: ${event} — ignoring`);
+          break;
       }
     } catch (err) {
-      console.error(`[Webhook] Error processing event "${event}":`, err);
       if (err instanceof PaymentConflict) {
         return c.json({ error: err.message }, 422);
       }
+      reportError("paystack.webhook_failed", err);
       return c.json({ error: "Payment processing failed" }, 500);
     }
 

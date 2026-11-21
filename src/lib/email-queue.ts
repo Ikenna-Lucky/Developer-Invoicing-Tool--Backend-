@@ -1,3 +1,4 @@
+import { reportError } from "./observability";
 import {
   createCipheriv,
   createDecipheriv,
@@ -112,12 +113,14 @@ export async function processNextEmail(
   database: DB,
   send = deliverMail,
 ): Promise<boolean> {
-  await database.execute(sql`UPDATE email_jobs SET status = 'failed', payload = NULL,
+  const expired =
+    await database.execute(sql`UPDATE email_jobs SET status = 'failed', payload = NULL,
     last_error = 'expired', claim_id = NULL, locked_until = NULL
     WHERE id IN (SELECT id FROM email_jobs WHERE status IN ('pending', 'processing') AND
       (expires_at <= now() OR (attempts >= 6 AND status = 'processing' AND locked_until <= now())) LIMIT 100)
     AND status IN ('pending', 'processing') AND
-      (expires_at <= now() OR (attempts >= 6 AND status = 'processing' AND locked_until <= now()))`);
+      (expires_at <= now() OR (attempts >= 6 AND status = 'processing' AND locked_until <= now())) RETURNING id`);
+  if (expired.length) reportError("email.delivery_failed");
   const claimId = randomUUID();
   const rows = await database.execute(sql`
     WITH candidate AS (
@@ -185,6 +188,7 @@ export async function processNextEmail(
         lockedUntil: null,
       })
       .where(ownedClaim);
+    reportError("email.delivery_failed");
     return true;
   }
   try {
@@ -210,7 +214,7 @@ export async function processNextEmail(
       result.retryable &&
       job.attempts < 6 &&
       job.expiresAt.getTime() > Date.now();
-    await database
+    const updated = await database
       .update(emailJobs)
       .set({
         status: retry ? "pending" : "failed",
@@ -224,7 +228,9 @@ export async function processNextEmail(
         claimId: null,
         lockedUntil: null,
       })
-      .where(ownedClaim);
+      .where(ownedClaim)
+      .returning({ id: emailJobs.id });
+    if (!retry && updated.length) reportError("email.delivery_failed");
   }
   return true;
 }
@@ -236,8 +242,8 @@ export function startEmailWorker(database: DB) {
     running = true;
     try {
       await processNextEmail(database);
-    } catch {
-      console.error("Email worker could not update the queue");
+    } catch (error) {
+      reportError("email.worker_failed", error);
     } finally {
       running = false;
     }

@@ -11,6 +11,7 @@ import {
   index,
   integer,
   uniqueIndex,
+  jsonb,
 } from "drizzle-orm/pg-core";
 import { relations, sql } from "drizzle-orm";
 
@@ -20,6 +21,28 @@ export const invoiceStatusEnum = pgEnum("invoice_status", [
   "paid",
   "overdue",
 ]);
+
+export const auditEvents = pgTable(
+  "audit_events",
+  {
+    id: text("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()::text`),
+    ownerId: text("owner_id").notNull(),
+    action: text("action").notNull(),
+    resourceId: text("resource_id").notNull(),
+    details: jsonb("details").$type<Record<string, string | null>>().notNull(),
+    occurredAt: timestamp("occurred_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => ({
+    ownerTime: index("audit_events_owner_time_idx").on(
+      table.ownerId,
+      table.occurredAt,
+    ),
+  }),
+);
 
 export const users = pgTable("users", {
   id: text("id").primaryKey(),

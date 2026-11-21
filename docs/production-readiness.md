@@ -20,7 +20,8 @@ These changes do not repair historical payment inconsistencies, reconcile extra
 payments, issue refunds, or establish how freelancers receive settlements.
 Issued invoice details and items are now protected from edits and permanent
 deletion. Sent/overdue invoices can be marked paid manually; this preserves the
-existing offline-payment action but does not create an audited payment record.
+existing offline-payment action. Status transitions now have database audit events,
+but this action still does not create an offline payment ledger entry.
 Offline payment recording and invoice snapshots of sender/client identity remain
 separate work: changing a client profile can still affect regenerated documents.
 
@@ -64,8 +65,10 @@ database failures verify error responses; external email/OAuth and browser flows
 remain unverified. Only disposable databases were migrated.
 
 On 21 November 2026, TypeScript checking passed for source, scripts, and tests.
-The workflow YAML parsed successfully. Native Bun 1.4.5 passed 107 unit/database tests plus five real Chromium tests:
-21 webhook/authentication/email/PDF checks and 86 PostgreSQL integration tests, with no skips.
+The workflow YAML parsed successfully. Native Bun 1.4.5 passed 120 unit/database tests:
+27 webhook/authentication/email/PDF/monitoring checks and 93 PostgreSQL integration tests, with no skips.
+The five real Chromium tests passed in the preceding PDF build; they were not rerun
+for the monitoring change.
 
 Initial execution used Node 24 with a temporary compatibility adapter. The final
 run used a portable Bun 1.4.5 binary verified against the npm package integrity
@@ -179,6 +182,33 @@ large-workload verification, general request limits, and pagination remain relea
 work. Limits bound application work, not peak memory or every browser failure.
 See README for exact limits and compatibility behavior.
 
+## Monitoring and audit changes
+
+Request IDs and JSON completion/error logs exclude raw request and provider data.
+The optional Sentry SDK rebuilds events from fixed names, request IDs, and limited
+source locations; automatic instrumentation and tracing are disabled. Fatal
+exceptions/rejections log safely, flush within a bounded deadline, and exit with
+failure. A local HTTP collector exercised the actual SDK transport; subprocess
+tests verified fatal exits with no DSN. Real Sentry receipt, alert delivery, Render
+restarts, hosted CI, Linux runtime behavior, and operational response remain unverified.
+
+Migration 0008 records selected account, session, client, invoice/item, payment,
+and email events in the same transaction as the underlying write. Tests cover
+rollback, injected audit write failure, concurrent payment replays, credential/
+content exclusion, verification/password/session/email transitions, Trash, no-op
+writes, account deletion, and append-only update/delete/truncate protection.
+Fresh/legacy/repeated migration checks passed on disposable PostgreSQL 16.
+Schema snapshot generation reports no further changes. TypeScript and API smoke
+checks passed. No production migration, external notification, frontend change,
+or deployment was performed.
+
+These records identify the data owner, not the actor, and do not carry HTTP
+request IDs. They are not an offline-payment ledger or tamper-proof external
+archive. A privileged database owner can alter trigger protections. Provision
+separate migration/runtime roles, decide retention/export policy, monitor table
+and queue growth, verify backup/restore, and configure/test alerts before release.
+See [monitoring setup](monitoring.md) for Render steps and the manual check.
+
 ## Remaining controls
 
 | Area | Status and next work |
@@ -189,7 +219,7 @@ See README for exact limits and compatibility behavior.
 | Identity and sessions (PR-04/05) | Atomic reset/refresh, unique tokens, consistent deadlines, and server-side revocation implemented and tested. Shared IP/account rate limits are tested. Email verification and account gates are tested. Deployed proxy validation, replay escalation policy, and browser verification remain. |
 | Ownership (PR-06) | Cross-user invoice read/edit/send/delete and client selection tests passed. Wider auth/client workflows remain. Team roles are outside the current individual-user model. |
 | API security (PR-07) | Exact origin CSRF checks and bounded authentication bodies implemented/tested. PDF escaping, network denial, logo validation, and render limits are tested. Wider request limits and configuration checks remain. |
-| Privacy and retention (PR-08) | Planned: account export/deletion, retention rules, and redacted operational logs. |
+| Privacy and retention (PR-08) | Allowlisted operational logs and outgoing monitoring events implemented/tested. Account export/deletion and retention rules remain. |
 | Data correctness (PR-09) | Payment, numbering, rounding, deletion, and forward migration tests passed natively. Existing-data reconciliation, offline payment history, and identity snapshots remain. |
 | Integrations/jobs (PR-10) | Durable encrypted email jobs, provider acceptance state, retries, and timeouts are tested locally. Hosted workers, live provider delivery, backpressure, and payment reconciliation remain. |
 | Tests (PR-11) | Financial, invoice isolation, session, and migration regressions passed. Real PDF security tests passed; live OAuth, provider sandboxes, and assembled frontend/API journeys remain. |
@@ -197,7 +227,7 @@ See README for exact limits and compatibility behavior.
 | Performance/resilience (PR-13/14) | PDF concurrency/deadline/size limits implemented and tested; pagination remains. Workload targets, shutdown, and recovery tests remain undefined. |
 | Builds/infrastructure (PR-15/16) | CI exists; hosted execution, scans, runtime pinning, environment isolation, and deployed secrets/config remain unverified. |
 | Delivery (PR-17) | Docker migration packaging/startup updated but image unverified. Coordinated migration rollout, enforced merge/deploy gates, and rollback rehearsal remain. |
-| Observability/audit (PR-18) | Console logging exists; request IDs, redaction, alerts, and financial/security audit history remain. |
+| Observability/audit (PR-18) | JSON logs, request IDs, optional sanitized Sentry events, and transactional database history implemented/tested. Live delivery/alerts, uptime checks, actor/request attribution, restricted database roles, and retention remain. |
 | Recovery (PR-19) | Unverified: backup coverage and an exercised restore. Set acceptable data loss and recovery time with the maintainer. |
 | Operations/governance (PR-20/21) | Planned: name the responder and release decision maker; document incident and payment-repair procedures. No risks have been accepted on the owner's behalf. |
 | Maintenance (PR-22) | Planned: dependency updates, vulnerability triage, access reviews, and recurring restore checks. |

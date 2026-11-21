@@ -1,6 +1,7 @@
+import "./instrumentation";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { logger } from "hono/logger";
+import { logEvent, reportError, requestLogging } from "./lib/observability";
 import { prettyJSON } from "hono/pretty-json";
 import { HTTPException } from "hono/http-exception";
 import { validateAuthConfiguration } from "./lib/jwt";
@@ -20,6 +21,7 @@ import webhooks from "./routes/webhooks";
 
 validateAuthConfiguration();
 const app = new Hono();
+app.use("*", requestLogging());
 
 app.use(
   "*",
@@ -28,10 +30,9 @@ app.use(
     allowHeaders: ["Content-Type", "Authorization"],
     allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     credentials: true,
-    exposeHeaders: ["Retry-After"],
+    exposeHeaders: ["Retry-After", "X-Request-ID"],
   }),
 );
-app.use("*", logger());
 app.use("*", prettyJSON());
 app.use("*", createCsrfProtection());
 app.use("*", createAuthBodyLimit());
@@ -53,14 +54,15 @@ app.get("/", (c) => {
 
 app.onError((err, c) => {
   if (err instanceof HTTPException) {
+    if (err.status >= 500) reportError("request.failed", err);
     return c.json({ error: err.message }, err.status);
   }
-  console.error(err);
+  reportError("request.failed", err);
   return c.json({ error: "Internal server error" }, 500);
 });
 
 app.notFound((c) => {
-  return c.json({ error: `Route ${c.req.path} not found` }, 404);
+  return c.json({ error: "Route not found" }, 404);
 });
 
 const port = parseInt(process.env.PORT ?? "3001");
@@ -77,7 +79,7 @@ if (
   process.env.EMAIL_QUEUE_ENCRYPTION_KEY
 )
   startEmailWorker(db);
-console.log(`🚀 API running on http://localhost:${port}`);
+logEvent("api.started");
 
 export default {
   port,

@@ -1,3 +1,4 @@
+import { reportError } from "../lib/observability";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { zValidator } from "@hono/zod-validator";
@@ -216,7 +217,7 @@ export function createInvoicesRouter(
         if (err.status === 503) c.header("Retry-After", "5");
         return c.json({ error: err.message }, err.status);
       }
-      console.error("PDF generation failed");
+      reportError("pdf.failed", err);
       return c.json({ error: "Failed to generate PDF" }, 500);
     }
   });
@@ -348,7 +349,7 @@ export function createInvoicesRouter(
             }
           }
         } catch (err) {
-          console.error("[send] Paystack error (non-fatal):", err);
+          reportError("paystack.checkout_failed", err);
         } finally {
           clearTimeout(paystackTimeout);
         }
