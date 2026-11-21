@@ -18,45 +18,78 @@ below remain. Render configuration and live transactions have not been verified.
 
 These changes do not repair historical payment inconsistencies, reconcile extra
 payments, issue refunds, or establish how freelancers receive settlements.
-Invoice edits and manual status changes still need rules that protect paid records.
+Issued invoice details and items are now protected from edits and permanent
+deletion. Sent/overdue invoices can be marked paid manually; this preserves the
+existing offline-payment action but does not create an audited payment record.
+Offline payment recording and invoice snapshots of sender/client identity remain
+separate work: changing a client profile can still affect regenerated documents.
+
+## Invoice integrity changes
+
+- Atomic per-user counters and a per-user unique constraint prevent number
+  collisions. Counters survive draft deletion and roll back with failed creation.
+- Quantity/rate precision matches storage; positive amounts use integer arithmetic
+  and half-up rounding per line before summing the total.
+- Only unpaid, unlinked drafts can be edited or permanently deleted. Issued
+  invoices remain archivable/restorable. Clients with invoices cannot be deleted.
+- Invoice locks coordinate edits, sends, status changes, deletion, and payment
+  settlement. Database triggers protect issued invoice details and items as well.
+- Migration 0004 repairs fields skipped by older journal timestamps, backfills
+  counters, changes uniqueness/deletion constraints, and retains historical files.
+- Docker packages migrations and applies them before serving requests. Its
+  Puppeteer skip-download setting now matches the installed package.
 
 ## Verification
 
 On 21 November 2026, TypeScript checking passed for source, scripts, and tests.
-The workflow YAML parsed successfully. Six webhook/validation tests and nine
-PostgreSQL integration tests passed locally, with no skipped tests.
+The workflow YAML parsed successfully. Native Bun 1.4.5 passed six
+webhook/validation tests and 28 PostgreSQL integration tests, with no skips.
 
-Local execution used Node 24 with a temporary TypeScript/Bun-test compatibility
-adapter because Bun was unavailable. The database was real PostgreSQL 16 in a
-disposable container. Tests covered exact saved amounts, concurrent duplicates,
+Initial execution used Node 24 with a temporary compatibility adapter. The final
+run used a portable Bun 1.4.5 binary verified against the npm package integrity
+hash. The database was real PostgreSQL 16 in a disposable container. Tests covered
+exact saved amounts, concurrent duplicates,
 concurrent distinct references, mismatches, reference reuse, signed HTTP requests,
 and transaction rollback using an injected PostgreSQL update failure. The database
 failure response test used an injected failing transaction implementation.
+Invoice tests also covered ten concurrent allocations, counter rollback, number
+retention after deletion, rounding, direct SQL protections, cross-user API access,
+Trash behavior, competing sends, and concurrent client deletion/invoice creation.
+The send-status test intentionally used no email credentials; it verifies state
+changes and conflict responses, not delivery. Migration tests exercised the real
+migrator on a fresh schema, a database with only migration 0000 recorded, and a
+repeat run. All test databases are separately created and removed by each suite.
 
 CI now runs `bun run test` and `bun run test:integration` with PostgreSQL 16.
-Native Bun execution and the hosted CI run remain unverified. Integration setup
-applies migration SQL in filename order; it does not establish migration journal
-correctness, upgrade safety, deployed performance, or live Paystack compatibility.
+The hosted CI run and Docker image remain unverified. Tested migration scenarios
+were exercised only against disposable databases. The local Docker build failed
+while downloading the base image because Docker could not resolve its registry
+CDN host; it did not reach the application build steps. Native API startup and
+the three smoke checks passed.
+These checks
+do not establish upgrade safety for every production state, deployed performance,
+or live Paystack compatibility. Production migration/cutover, a verified backup,
+and a forward-repair/rollback plan remain required before deployment.
 Re-run these checks after payment, schema, runtime, or dependency changes.
 
 ## Remaining controls
 
 | Area | Status and next work |
 |---|---|
-| Product rules (PR-01) | Planned: define invoice transitions, settlement routing, supported payment cases, and release acceptance criteria. |
+| Product rules (PR-01) | Invoice transitions and draft-only editing/deletion implemented. Settlement routing, offline payment audit, and release acceptance criteria remain. |
 | Maintainability (PR-02) | Payment recording extracted into a focused operation; template extraction and naming cleanup remain. |
 | Threats (PR-03) | Planned: document abuse and failure cases across authentication, payments, PDFs, and external services. |
 | Identity and sessions (PR-04/05) | Missing safeguards: email verification, rate limits, atomic reset/refresh, unique refresh tokens, and consistent session lifetimes. |
-| Ownership (PR-06) | Per-user query filters observed; cross-user API regression tests remain. Team roles are outside the current individual-user model. |
+| Ownership (PR-06) | Cross-user invoice read/edit/send/delete and client selection tests passed. Wider auth/client workflows remain. Team roles are outside the current individual-user model. |
 | API security (PR-07) | Missing: explicit CSRF defense, template escaping, URL restrictions, request/resource limits, and startup configuration checks. |
 | Privacy and retention (PR-08) | Planned: account export/deletion, retention rules, and redacted operational logs. |
-| Data correctness (PR-09) | Payment transaction tests passed under the local adapter. Invoice numbering, exact line-item totals, client deletion cascades, and migration ordering remain blockers. |
+| Data correctness (PR-09) | Payment, numbering, rounding, deletion, and forward migration tests passed natively. Existing-data reconciliation, offline payment history, and identity snapshots remain. |
 | Integrations/jobs (PR-10) | Missing: durable email work, truthful delivery state, provider timeouts, and payment reconciliation. |
-| Tests (PR-11) | Payment regressions added; auth, invoice CRUD, isolation, migrations, and assembled frontend/API journeys remain. |
-| UX/contracts (PR-12) | Unverified: frontend compatibility, retry messaging, session expiry, and accessible error recovery. |
+| Tests (PR-11) | Financial, invoice isolation, and migration regressions passed. Auth, PDFs, provider sandboxes, and assembled frontend/API journeys remain. |
+| UX/contracts (PR-12) | Frontend edit/delete affordances and client-deletion copy need updates for the new 409 responses. Browser flows, session expiry, and accessible recovery remain unverified. |
 | Performance/resilience (PR-13/14) | Missing: pagination and PDF concurrency limits. Workload targets, shutdown, and recovery tests remain undefined. |
 | Builds/infrastructure (PR-15/16) | CI exists; hosted execution, scans, runtime pinning, environment isolation, and deployed secrets/config remain unverified. |
-| Delivery (PR-17) | Missing/unverified: Docker migration packaging, migration rollout, enforced merge/deploy gates, and rollback rehearsal. |
+| Delivery (PR-17) | Docker migration packaging/startup updated but image unverified. Coordinated migration rollout, enforced merge/deploy gates, and rollback rehearsal remain. |
 | Observability/audit (PR-18) | Console logging exists; request IDs, redaction, alerts, and financial/security audit history remain. |
 | Recovery (PR-19) | Unverified: backup coverage and an exercised restore. Set acceptable data loss and recovery time with the maintainer. |
 | Operations/governance (PR-20/21) | Planned: name the responder and release decision maker; document incident and payment-repair procedures. No risks have been accepted on the owner's behalf. |

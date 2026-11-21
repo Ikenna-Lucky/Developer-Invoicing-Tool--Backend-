@@ -5,8 +5,12 @@ import {
   numeric,
   boolean,
   pgEnum,
+  bigint,
+  unique,
+  check,
+  index,
 } from "drizzle-orm/pg-core";
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 
 export const invoiceStatusEnum = pgEnum("invoice_status", [
   "draft",
@@ -67,27 +71,53 @@ export const clients = pgTable("clients", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
-export const invoices = pgTable("invoices", {
-  id: text("id").primaryKey(),
-  userId: text("user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
-  clientId: text("client_id")
-    .notNull()
-    .references(() => clients.id, { onDelete: "cascade" }),
-  invoiceNumber: text("invoice_number").notNull().unique(), // e.g. INV-0001
-  status: invoiceStatusEnum("status").default("draft").notNull(),
-  issueDate: timestamp("issue_date").notNull(),
-  dueDate: timestamp("due_date").notNull(),
-  totalAmount: numeric("total_amount", { precision: 10, scale: 2 }).notNull(),
-  notes: text("notes"),
-  pdfUrl: text("pdf_url"), // Reserved for a stored PDF URL.
-  stripePaymentLink: text("stripe_payment_link"), // Stores the Paystack checkout URL.
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
-  // A timestamp moves the invoice to Trash; null keeps it active.
-  deletedAt: timestamp("deleted_at"),
-});
+export const invoiceCounters = pgTable(
+  "invoice_counters",
+  {
+    userId: text("user_id")
+      .primaryKey()
+      .references(() => users.id, { onDelete: "cascade" }),
+    lastNumber: bigint("last_number", { mode: "number" }).notNull().default(0),
+  },
+  (table) => ({
+    numberRange: check(
+      "invoice_counters_number_range",
+      sql`${table.lastNumber} between 0 and 9007199254740991`,
+    ),
+  }),
+);
+
+export const invoices = pgTable(
+  "invoices",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    clientId: text("client_id")
+      .notNull()
+      .references(() => clients.id, { onDelete: "restrict" }),
+    invoiceNumber: text("invoice_number").notNull(), // e.g. INV-0001
+    status: invoiceStatusEnum("status").default("draft").notNull(),
+    issueDate: timestamp("issue_date").notNull(),
+    dueDate: timestamp("due_date").notNull(),
+    totalAmount: numeric("total_amount", { precision: 10, scale: 2 }).notNull(),
+    notes: text("notes"),
+    pdfUrl: text("pdf_url"), // Reserved for a stored PDF URL.
+    stripePaymentLink: text("stripe_payment_link"), // Stores the Paystack checkout URL.
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+    // A timestamp moves the invoice to Trash; null keeps it active.
+    deletedAt: timestamp("deleted_at"),
+  },
+  (table) => ({
+    userInvoiceNumber: unique("invoices_user_invoice_number_unique").on(
+      table.userId,
+      table.invoiceNumber,
+    ),
+    deletedAtIndex: index("invoices_deleted_at_idx").on(table.deletedAt),
+  }),
+);
 
 export const invoiceItems = pgTable("invoice_items", {
   id: text("id").primaryKey(),
@@ -105,7 +135,7 @@ export const payments = pgTable("payments", {
   id: text("id").primaryKey(),
   invoiceId: text("invoice_id")
     .notNull()
-    .references(() => invoices.id, { onDelete: "cascade" }),
+    .references(() => invoices.id, { onDelete: "restrict" }),
   amountPaid: numeric("amount_paid", { precision: 10, scale: 2 }).notNull(),
   paidAt: timestamp("paid_at").notNull(),
   stripePaymentId: text("stripe_payment_id").unique(), // Stores the Paystack reference.

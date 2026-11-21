@@ -1,50 +1,25 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createHmac, randomUUID } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
-import { drizzle } from "drizzle-orm/postgres-js";
+import { fileURLToPath } from "node:url";
+import { migrate } from "drizzle-orm/postgres-js/migrator";
+import { createTestDatabase } from "./database";
 import { eq } from "drizzle-orm";
-import postgres from "postgres";
 import * as schema from "../../src/db/schema";
 import {
   recordPaystackPayment,
   type PaystackCharge,
 } from "../../src/lib/payments";
 
-const connectionString = process.env.TEST_DATABASE_URL;
-if (!connectionString)
-  throw new Error(
-    "TEST_DATABASE_URL is required for PostgreSQL integration tests",
-  );
-const url = new URL(connectionString);
-if (
-  url.pathname !== "/billd_test" ||
-  !["localhost", "127.0.0.1", "billd-review-postgres"].includes(url.hostname)
-) {
-  throw new Error(
-    "Integration tests require a local, disposable billd_test database",
-  );
-}
-const client = postgres(connectionString, { max: 5 });
-const database = drizzle(client, { schema });
-
+const context = createTestDatabase();
+const { client, database } = context;
 beforeAll(async () => {
-  const tables =
-    await client`select tablename from pg_tables where schemaname = 'public'`;
-  if (tables.length)
-    throw new Error("Integration tests require an empty database");
-  const directory = new URL("../../drizzle/", import.meta.url);
-  for (const file of (await readdir(directory))
-    .filter((name) => name.endsWith(".sql"))
-    .sort()) {
-    const migration = await readFile(new URL(file, directory), "utf8");
-    for (const statement of migration.split("--> statement-breakpoint")) {
-      if (statement.trim()) await client.unsafe(statement);
-    }
-  }
+  await context.create();
+  await migrate(database, {
+    migrationsFolder: fileURLToPath(new URL("../../drizzle/", import.meta.url)),
+  });
 }, 30_000);
-
 afterAll(async () => {
-  await client.end();
+  await context.close();
 });
 
 async function fixture() {

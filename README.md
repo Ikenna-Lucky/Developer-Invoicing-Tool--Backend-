@@ -117,7 +117,7 @@ All routes except `/health` and `/auth/*` require an authenticated session (acce
 
 GitHub Actions runs `.github/workflows/ci.yml` on pushes to `main` and
 `dev-branch`, on pull requests, and when started manually. It installs the locked
-dependencies, checks TypeScript, runs payment tests against PostgreSQL 16,
+dependencies, checks TypeScript, runs financial and migration tests against PostgreSQL 16,
 starts the API for smoke checks, and builds the Docker image. Failures and their
 logs appear in the repository's Actions tab.
 
@@ -125,13 +125,30 @@ The smoke checks cover liveness, unauthenticated client access, and unsigned
 Paystack events. They use dummy credentials and do not connect to a database or
 call payment and email services. Payment integration tests separately cover
 transactions, duplicate events, amount/currency mismatches, rollback, and signed
-webhook requests. Other database workflows and PDF rendering still need tests.
+webhook requests. Invoice tests cover numbering, exact totals, lifecycle rules,
+ownership boundaries, and concurrent requests. PDF rendering and authentication
+workflows still need integration tests.
 
 Run `bun run test` for webhook boundary checks. For integration tests, set
-`TEST_DATABASE_URL` to an empty, disposable local database named `billd_test`,
-then run `bun run test:integration`. The suite applies the SQL migration files
-in filename order and leaves the test data in that database. It does not verify
-the migration journal or production upgrade path. Do not use a live database.
+`TEST_DATABASE_URL` to a disposable local database named `billd_test`, then run
+`bun run test:integration`. The test user needs permission to create databases.
+Each suite creates and removes its own database and uses the real Drizzle
+migrator. Migration tests also reproduce an older database with skipped journal
+entries. Do not use a live database.
+
+Invoice numbers are unique per user. Persistent counters prevent collisions
+during concurrent creation and keep deleted draft numbers from being reused.
+Quantities and rates support two decimal places; each line is rounded to a kobo
+before totals are summed. The maximum invoice total is NGN 99,999,999.99.
+
+Only unpaid drafts without payment links can be edited or permanently deleted.
+Permanent deletion still requires moving the draft to Trash first. Issued
+invoices can be archived and restored, but their details and items are protected.
+Clients with any invoice history cannot be deleted. Manual status changes allow
+`sent -> overdue`, `sent -> paid`, and `overdue -> paid`; overdue marking requires
+the due date to have passed. Drafts must use Send, and paid invoices cannot be
+reopened. Unsupported changes return 409; active-only operations return 404 for
+invoices in Trash. The frontend's edit/delete controls need to reflect these rules.
 
 Payment handling currently supports full NGN payments. A successful event must
 match the invoice total. Duplicate references are acknowledged after checking
@@ -143,5 +160,14 @@ After the first successful run, require `Typecheck and smoke checks` and
 `Docker build` in the branch protection rules for `main`. This workflow does not
 deploy the API or capture errors from the running service. Deployment gating and
 runtime error monitoring must be configured with the hosting service.
+
+The Docker image now includes migrations and runs `bun run start`, which applies
+them before starting the API. Migration `0004_invoice_integrity` backfills counters,
+repairs fields skipped by older journal timestamps, and installs history
+protections. Historical migration files and timestamps are unchanged. Before a
+production rollout, verify a backup, stop old invoice writers, apply migrations,
+and switch to this backend. Changing uniqueness and deletion rules requires a
+coordinated rollout; application rollback alone does not undo the migration.
+Only disposable test databases have been migrated during development.
 
 Puppeteer needs a Chromium binary at runtime — set `PUPPETEER_EXECUTABLE_PATH` in production (this project targets Render's free tier, which is why the browser launch args are tuned for low memory).
