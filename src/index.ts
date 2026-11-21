@@ -4,6 +4,12 @@ import { logger } from "hono/logger";
 import { prettyJSON } from "hono/pretty-json";
 import { HTTPException } from "hono/http-exception";
 import { validateAuthConfiguration } from "./lib/jwt";
+import { db } from "./db";
+import { createCsrfProtection, frontendOrigin } from "./middleware/csrf";
+import {
+  createAuthBodyLimit,
+  createAuthRateLimit,
+} from "./middleware/rate-limit";
 
 import health from "./routes/health";
 import auth from "./routes/auth";
@@ -17,14 +23,18 @@ const app = new Hono();
 app.use(
   "*",
   cors({
-    origin: process.env.FRONTEND_URL ?? "http://localhost:3000",
+    origin: frontendOrigin(),
     allowHeaders: ["Content-Type", "Authorization"],
     allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     credentials: true,
+    exposeHeaders: ["Retry-After"],
   }),
 );
 app.use("*", logger());
 app.use("*", prettyJSON());
+app.use("*", createCsrfProtection());
+app.use("*", createAuthBodyLimit());
+app.use("*", createAuthRateLimit(db));
 
 app.route("/health", health);
 app.route("/auth", auth);

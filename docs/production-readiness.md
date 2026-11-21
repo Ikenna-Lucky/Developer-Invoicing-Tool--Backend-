@@ -64,8 +64,8 @@ database failures verify error responses; external email/OAuth and browser flows
 remain unverified. Only disposable databases were migrated.
 
 On 21 November 2026, TypeScript checking passed for source, scripts, and tests.
-The workflow YAML parsed successfully. Native Bun 1.4.5 passed 63 tests:
-13 webhook/authentication checks and 50 PostgreSQL integration tests, with no skips.
+The workflow YAML parsed successfully. Native Bun 1.4.5 passed 75 tests:
+13 webhook/authentication checks and 62 PostgreSQL integration tests, with no skips.
 
 Initial execution used Node 24 with a temporary compatibility adapter. The final
 run used a portable Bun 1.4.5 binary verified against the npm package integrity
@@ -87,12 +87,35 @@ The hosted CI run and Docker image remain unverified. Tested migration scenarios
 were exercised only against disposable databases. The local Docker build failed
 while downloading the base image because Docker could not resolve its registry
 CDN host; it did not reach the application build steps. Native API startup and
-the three smoke checks passed.
+the five smoke checks passed.
 These checks
 do not establish upgrade safety for every production state, deployed performance,
 or live Paystack compatibility. Production migration/cutover, a verified backup,
 and a forward-repair/rollback plan remain required before deployment.
 Re-run these checks after payment, schema, runtime, or dependency changes.
+
+## Request security changes
+
+Migration 0006 adds PostgreSQL rate counters shared across processes. Native tests
+verify concurrent quotas, expiry cleanup, per-account normalization, spoofed IP
+headers, 429/retry headers, oversized streamed bodies, outages, and real auth
+router registration/login through the middleware. CSRF tests cover missing/null,
+lookalike, sibling, trusted origins, preflight, safe reads, and the exact webhook
+exemption. Existing webhook tests verify signatures separately. The native smoke
+checks also exercise trusted and forbidden logout through the actual API entry.
+
+The frontend's existing browser fetch requests supply Origin automatically.
+Browser E2E and Render ingress behavior are unverified. Before deployment, verify
+FRONTEND_URL and the trusted proxy count; zero trusts only socket addresses.
+Rate policies and operational tradeoffs are recorded in README. Account quotas
+can be exhausted intentionally; fixed windows, address rotation, distributed
+abuse, general API/PDF limits, and edge protection need further work. Counters
+use pseudonymous hashes and opportunistic bounded expiry cleanup. Database
+failures stop limited authentication routes with 503, while logout and payment
+webhook validation remain available outside this limiter. No production migration
+or deployment was performed.
+
+Reference: [OWASP CSRF prevention](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html).
 
 ## Remaining controls
 
@@ -101,9 +124,9 @@ Re-run these checks after payment, schema, runtime, or dependency changes.
 | Product rules (PR-01) | Invoice transitions and draft-only editing/deletion implemented. Settlement routing, offline payment audit, and release acceptance criteria remain. |
 | Maintainability (PR-02) | Payment recording extracted into a focused operation; template extraction and naming cleanup remain. |
 | Threats (PR-03) | Planned: document abuse and failure cases across authentication, payments, PDFs, and external services. |
-| Identity and sessions (PR-04/05) | Atomic reset/refresh, unique tokens, consistent deadlines, and server-side revocation implemented and tested. Email verification, rate limits, replay escalation policy, and browser verification remain. |
+| Identity and sessions (PR-04/05) | Atomic reset/refresh, unique tokens, consistent deadlines, and server-side revocation implemented and tested. Shared IP/account rate limits are tested. Email verification, deployed proxy validation, replay escalation policy, and browser verification remain. |
 | Ownership (PR-06) | Cross-user invoice read/edit/send/delete and client selection tests passed. Wider auth/client workflows remain. Team roles are outside the current individual-user model. |
-| API security (PR-07) | Missing: explicit CSRF defense, template escaping, URL restrictions, request/resource limits, and wider startup configuration checks. Authentication configuration is validated. |
+| API security (PR-07) | Exact origin CSRF checks and bounded authentication bodies implemented/tested. Template escaping, URL restrictions, wider resource limits, and configuration checks remain. |
 | Privacy and retention (PR-08) | Planned: account export/deletion, retention rules, and redacted operational logs. |
 | Data correctness (PR-09) | Payment, numbering, rounding, deletion, and forward migration tests passed natively. Existing-data reconciliation, offline payment history, and identity snapshots remain. |
 | Integrations/jobs (PR-10) | Missing: durable email work, truthful delivery state, provider timeouts, and payment reconciliation. |

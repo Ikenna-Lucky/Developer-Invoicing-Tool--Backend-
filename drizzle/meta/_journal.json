@@ -43,6 +43,13 @@
       "when": 1795219200001,
       "tag": "0005_session_integrity",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1795262235053,
+      "tag": "0006_request_security",
+      "breakpoints": true
     }
   ]
 }

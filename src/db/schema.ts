@@ -145,6 +145,18 @@ export const invoiceItems = pgTable("invoice_items", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
+export const requestRateLimits = pgTable(
+  "request_rate_limits",
+  {
+    key: text("key").primaryKey(),
+    attempts: integer("attempts").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  },
+  (table) => ({
+    expiryIndex: index("request_rate_limits_expiry_idx").on(table.expiresAt),
+  }),
+);
+
 export const payments = pgTable("payments", {
   id: text("id").primaryKey(),
   invoiceId: text("invoice_id")

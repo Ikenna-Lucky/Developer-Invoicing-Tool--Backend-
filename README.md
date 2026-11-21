@@ -137,8 +137,47 @@ Concurrent refresh requests accept one winner and reject reused tokens with 401
 without clearing cookies. The frontend should coordinate refresh requests and
 handle logout failure before clearing local state. Automatic token-family
 revocation on replay is not implemented. New passwords are limited to 72 UTF-8
-bytes to avoid bcrypt truncation. Rate limits, CSRF protection, verification email,
-and durable reset-email delivery remain separate work.
+bytes to avoid bcrypt truncation. Verification email and durable reset-email
+delivery remain separate work.
+
+Migration `0006_request_security` adds shared PostgreSQL authentication counters.
+Apply it before starting this backend. State-changing browser requests must send
+an `Origin` exactly matching `FRONTEND_URL`; missing, `null`, and other origins
+return 403. Set `FRONTEND_URL` to one HTTP(S) origin without a path, credentials,
+query, or fragment. The existing browser fetch calls send this header automatically.
+Command-line/API clients must supply it explicitly. This is a browser CSRF defense,
+not a substitute for authentication. The exact Paystack webhook path is exempt
+and continues to require its existing signature check. OAuth callbacks retain
+their state-cookie validation. GET, HEAD, and OPTIONS are exempt from origin checks.
+
+Authentication requests are limited to 16 KiB. Fixed windows count all attempts,
+including successful ones. Limits are shared across instances and restarts:
+
+| Endpoint                | Per IP               | Per email       |
+| ----------------------- | -------------------- | --------------- |
+| Login                   | 30 / 15 minutes      | 10 / 15 minutes |
+| Register                | 10 / hour            | —               |
+| Forgot password         | 10 / hour            | 3 / hour        |
+| Reset password          | 20 / 15 minutes      | —               |
+| Refresh                 | 120 / minute         | —               |
+| Google start / callback | 30 / 15 minutes each | —               |
+
+Limits return 429 with `Retry-After` seconds and leave session cookies intact.
+Counters store SHA-256 keys rather than raw IPs/emails; these are pseudonymous,
+not anonymous. Expired rows are removed in bounded batches on authentication
+traffic. Storage access failures return 503 before credential or provider work.
+Logout, health, and payment webhooks are excluded from authentication limits.
+
+`RATE_LIMIT_PROXY_HOPS` defaults to `0`, using Bun's socket address and ignoring
+forwarded headers. A positive value (1–9) selects that many entries from the right
+of `X-Forwarded-For`. Configure it only after verifying the ingress appends the
+client address and the service cannot be reached around those trusted proxies.
+Missing/invalid addresses share an `unknown` bucket. Render's actual proxy chain
+has not been verified: leaving zero behind a proxy can group users into one quota;
+trusting too many hops can let callers choose their own bucket. Verify this before
+deployment. Fixed windows allow boundary bursts; shared networks and targeted
+account throttling can temporarily affect legitimate users. Distributed abuse,
+IPv6 address rotation, general API/PDF limits, and edge DDoS controls need further work.
 
 GitHub Actions runs `.github/workflows/ci.yml` on pushes to `main` and
 `dev-branch`, on pull requests, and when started manually. It installs the locked
