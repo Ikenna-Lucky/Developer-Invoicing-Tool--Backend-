@@ -11,17 +11,24 @@ import {
   permanentlyDeleteDraftInvoice,
   lockOwnedInvoice,
 } from "../lib/invoices";
-import { invoices, invoiceItems, clients, users } from "../db/schema";
+import {
+  invoices,
+  invoiceItems,
+  clients,
+  users,
+  emailJobs,
+} from "../db/schema";
 import { createAuthMiddleware } from "../middleware/auth";
 import { generateInvoicePDF } from "../lib/pdf";
-import { sendMail } from "../lib/email";
+import { escapeEmailHtml } from "../lib/email";
+import { enqueueEmail } from "../lib/email-queue";
 import type { Variables } from "../types";
 
 export function createInvoicesRouter(database: DB = defaultDb) {
   const db = database;
   const invoicesRouter = new Hono<{ Variables: Variables }>();
 
-  invoicesRouter.use("*", createAuthMiddleware(database));
+  invoicesRouter.use("*", createAuthMiddleware(database, true));
 
   const lineItemSchema = z.object({
     description: z.string().min(1, "Description is required"),
@@ -329,7 +336,7 @@ export function createInvoicesRouter(database: DB = defaultDb) {
         }
       }
 
-      // Mark the invoice sent before starting background email delivery.
+      // Issuing the invoice and queueing its email must commit together.
       await tx
         .update(invoices)
         .set({
@@ -344,22 +351,27 @@ export function createInvoicesRouter(database: DB = defaultDb) {
         with: { items: true, client: true },
       });
 
-      return { invoice, user, paymentLink, updated };
+      const senderName = user.businessName ?? user.fullName;
+      const email = await enqueueEmail(tx, {
+        userId,
+        invoiceId,
+        purpose: "invoice",
+        message: {
+          to: invoice.client.email,
+          subject: `Invoice ${invoice.invoiceNumber} from ${senderName} — ₦${Number(invoice.totalAmount).toLocaleString("en-NG")}`,
+          html: buildInvoiceEmail({ invoice, senderName, paymentLink }),
+        },
+      });
+      return { updated, email };
     });
-    const { invoice, user, paymentLink, updated } = delivery;
-
-    // Delivery runs in the background and is not guaranteed by this response.
-    const senderName = user.businessName ?? user.fullName;
-
-    sendMail({
-      to: invoice.client.email,
-      subject: `Invoice ${invoice.invoiceNumber} from ${senderName} — ₦${Number(invoice.totalAmount).toLocaleString("en-NG")}`,
-      html: buildInvoiceEmail({ invoice, senderName, paymentLink }),
-    }).catch((err) => {
-      console.error("[send] Background email failed:", err);
-    });
-
-    return c.json({ data: updated, message: "Invoice sent successfully" });
+    return c.json(
+      {
+        data: delivery.updated,
+        email: delivery.email,
+        message: "Invoice issued; email queued",
+      },
+      202,
+    );
   });
 
   // POST /invoices/:id/resend — re-sends the email for a non-draft invoice
@@ -367,41 +379,83 @@ export function createInvoicesRouter(database: DB = defaultDb) {
   invoicesRouter.post("/:id/resend", async (c) => {
     const userId = c.get("userId");
     const invoiceId = c.req.param("id");
+    const email = await db.transaction(async (tx) => {
+      await lockOwnedInvoice(tx, userId, invoiceId);
+      const invoice = await tx.query.invoices.findFirst({
+        where: and(
+          eq(invoices.id, invoiceId),
+          eq(invoices.userId, userId),
+          isNull(invoices.deletedAt),
+        ),
+        with: { client: true, items: true },
+      });
 
+      if (!invoice)
+        throw new HTTPException(404, { message: "Invoice not found" });
+      if (invoice.status === "draft") {
+        throw new HTTPException(400, {
+          message: "Draft invoices must be sent first, not resent",
+        });
+      }
+      const latest = await tx.query.emailJobs.findFirst({
+        where: eq(emailJobs.invoiceId, invoiceId),
+        orderBy: desc(emailJobs.createdAt),
+      });
+      if (
+        latest &&
+        latest.expiresAt > new Date() &&
+        ["pending", "processing"].includes(latest.status)
+      )
+        return { id: latest.id, status: latest.status };
+      if (latest && Date.now() - latest.createdAt.getTime() < 60_000)
+        throw new HTTPException(429, {
+          message: "Please wait one minute before resending this invoice",
+        });
+      const user = await tx.query.users.findFirst({
+        where: eq(users.id, userId),
+      });
+      if (!user) throw new HTTPException(404, { message: "User not found" });
+
+      const senderName = user.businessName ?? user.fullName;
+      const paymentLink = invoice.stripePaymentLink ?? null;
+
+      return enqueueEmail(tx, {
+        userId,
+        invoiceId,
+        purpose: "invoice",
+        message: {
+          to: invoice.client.email,
+          subject: `Invoice ${invoice.invoiceNumber} from ${senderName} — ₦${Number(invoice.totalAmount).toLocaleString("en-NG")}`,
+          html: buildInvoiceEmail({ invoice, senderName, paymentLink }),
+        },
+      });
+    });
+    return c.json({ email, message: "Invoice email queued" }, 202);
+  });
+
+  invoicesRouter.get("/:id/email-deliveries", async (c) => {
     const invoice = await db.query.invoices.findFirst({
       where: and(
-        eq(invoices.id, invoiceId),
-        eq(invoices.userId, userId),
-        isNull(invoices.deletedAt),
+        eq(invoices.id, c.req.param("id")),
+        eq(invoices.userId, c.get("userId")),
       ),
-      with: { client: true, items: true },
     });
-
-    if (!invoice) return c.json({ error: "Invoice not found" }, 404);
-    if (invoice.status === "draft") {
-      return c.json(
-        { error: "Draft invoices must be sent first, not resent" },
-        400,
-      );
-    }
-
-    const user = await db.query.users.findFirst({
-      where: eq(users.id, userId),
-    });
-    if (!user) return c.json({ error: "User not found" }, 404);
-
-    const senderName = user.businessName ?? user.fullName;
-    const paymentLink = invoice.stripePaymentLink ?? null;
-
-    sendMail({
-      to: invoice.client.email,
-      subject: `Invoice ${invoice.invoiceNumber} from ${senderName} — ₦${Number(invoice.totalAmount).toLocaleString("en-NG")}`,
-      html: buildInvoiceEmail({ invoice, senderName, paymentLink }),
-    }).catch((err) => {
-      console.error("[resend] Background email failed:", err);
-    });
-
-    return c.json({ message: "Invoice resent successfully" });
+    if (!invoice)
+      throw new HTTPException(404, { message: "Invoice not found" });
+    const jobs = await db
+      .select({
+        id: emailJobs.id,
+        status: emailJobs.status,
+        attempts: emailJobs.attempts,
+        acceptedAt: emailJobs.acceptedAt,
+        createdAt: emailJobs.createdAt,
+        lastError: emailJobs.lastError,
+      })
+      .from(emailJobs)
+      .where(eq(emailJobs.invoiceId, invoice.id))
+      .orderBy(desc(emailJobs.createdAt))
+      .limit(20);
+    return c.json({ data: jobs });
   });
 
   // DELETE /invoices/:id — moves the invoice to Trash until restored or permanently deleted.
@@ -482,6 +536,28 @@ function buildInvoiceEmail({
   senderName: string;
   paymentLink: string | null;
 }): string {
+  senderName = escapeEmailHtml(senderName);
+  invoice = {
+    ...invoice,
+    invoiceNumber: escapeEmailHtml(invoice.invoiceNumber),
+    notes: invoice.notes ? escapeEmailHtml(invoice.notes) : null,
+    client: {
+      ...invoice.client,
+      name: escapeEmailHtml(invoice.client.name),
+      email: escapeEmailHtml(invoice.client.email),
+      companyName: invoice.client.companyName
+        ? escapeEmailHtml(invoice.client.companyName)
+        : null,
+    },
+    items: invoice.items.map((item) => ({
+      ...item,
+      description: escapeEmailHtml(item.description),
+    })),
+  };
+  if (paymentLink) {
+    const url = new URL(paymentLink);
+    paymentLink = url.protocol === "https:" ? escapeEmailHtml(url.href) : null;
+  }
   const fmt = (n: number | string) =>
     `₦${Number(n).toLocaleString("en-NG", { minimumFractionDigits: 2 })}`;
 

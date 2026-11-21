@@ -29,6 +29,7 @@ export const users = pgTable("users", {
   fullName: text("full_name").notNull(),
   googleId: text("google_id").unique(),
   sessionVersion: integer("session_version").notNull().default(0),
+  emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
   businessName: text("business_name"),
   logoUrl: text("logo_url"),
   address: text("address"),
@@ -83,6 +84,20 @@ export const clients = pgTable("clients", {
   companyName: text("company_name"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const emailVerificationTokens = pgTable("email_verification_tokens", {
+  id: text("id").primaryKey(),
+  userId: text("user_id")
+    .notNull()
+    .unique()
+    .references(() => users.id, { onDelete: "cascade" }),
+  email: text("email").notNull(),
+  tokenHash: text("token_hash").notNull().unique(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 export const invoiceCounters = pgTable(
@@ -194,6 +209,50 @@ export const paymentsRelations = relations(payments, ({ one }) => ({
     references: [invoices.id],
   }),
 }));
+
+export const emailJobs = pgTable(
+  "email_jobs",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    invoiceId: text("invoice_id").references(() => invoices.id, {
+      onDelete: "restrict",
+    }),
+    purpose: text("purpose", {
+      enum: ["verification", "password_reset", "invoice"],
+    }).notNull(),
+    tokenHash: text("token_hash"),
+    payload: text("payload"),
+    status: text("status", {
+      enum: ["pending", "processing", "accepted", "failed", "cancelled"],
+    })
+      .notNull()
+      .default("pending"),
+    attempts: integer("attempts").notNull().default(0),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lockedUntil: timestamp("locked_until", { withTimezone: true }),
+    claimId: text("claim_id"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    providerMessageId: text("provider_message_id"),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    readyIndex: index("email_jobs_ready_idx").on(
+      table.status,
+      table.nextAttemptAt,
+    ),
+    invoiceIndex: index("email_jobs_invoice_idx").on(table.invoiceId),
+    userIndex: index("email_jobs_user_idx").on(table.userId),
+  }),
+);
 
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;

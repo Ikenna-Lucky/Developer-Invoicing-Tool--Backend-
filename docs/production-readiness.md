@@ -64,8 +64,8 @@ database failures verify error responses; external email/OAuth and browser flows
 remain unverified. Only disposable databases were migrated.
 
 On 21 November 2026, TypeScript checking passed for source, scripts, and tests.
-The workflow YAML parsed successfully. Native Bun 1.4.5 passed 75 tests:
-13 webhook/authentication checks and 62 PostgreSQL integration tests, with no skips.
+The workflow YAML parsed successfully. Native Bun 1.4.5 passed 99 tests:
+16 webhook/authentication/email checks and 83 PostgreSQL integration tests, with no skips.
 
 Initial execution used Node 24 with a temporary compatibility adapter. The final
 run used a portable Bun 1.4.5 binary verified against the npm package integrity
@@ -117,6 +117,37 @@ or deployment was performed.
 
 Reference: [OWASP CSRF prevention](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html).
 
+## Email verification and delivery changes
+
+Email verification gates dashboard, client, and invoice access; auth/recovery
+routes remain usable. Registration creates a session, hashed one-time token, and
+encrypted email job atomically. Verification requires a matching authenticated
+account, expires in 24 hours, consumes once, and is explicit rather than triggered
+by GET. Resends serialize on the user row, enforce a cooldown, replace older
+links, and cancel queued obsolete work. Existing accounts remain unverified until
+proof is obtained; Google requires a fresh provider-verified response. Unverified
+password accounts cannot be silently linked through Google.
+
+Verification, password-reset, and invoice messages use a PostgreSQL outbox.
+Queue payloads use AES-GCM with a separate environment key; terminal payloads are
+erased. Leased worker claims use SKIP LOCKED, bounded attempts, exponential delay,
+jitter, deadlines, and a stable provider idempotency key inside a 23-hour horizon.
+Workers recover after a crash/acknowledgement failure. Issuing an invoice and
+queueing its email commit together; the API/UI distinguish queued from provider
+accepted. Provider acceptance is not confirmed inbox delivery. Owner-only status
+endpoints and frontend status views expose progress without email bodies/tokens.
+Account switching now retains frontend session state if server logout fails.
+
+Native PostgreSQL tests cover single-use/expired/mismatched tokens, account gates,
+resend races, transactional enqueue failure, encryption binding, worker concurrency,
+lease recovery, provider-success/database-ack failure, cancellation during send,
+bounded retries, and invoice status isolation. Resend HTTP and Google profiles are
+stubbed; no real emails or provider account changes were performed. TypeScript is
+checked in both repositories; the frontend production build also passed. Migration tests include older account rows and do
+not auto-verify them. Browser E2E, actual inbox receipt, deployed keys/queue workers,
+provider reconciliation, retention, backpressure, alerting, and bounce tracking
+remain unverified or missing. See README for configuration and rollout details.
+
 ## Remaining controls
 
 | Area | Status and next work |
@@ -124,12 +155,12 @@ Reference: [OWASP CSRF prevention](https://cheatsheetseries.owasp.org/cheatsheet
 | Product rules (PR-01) | Invoice transitions and draft-only editing/deletion implemented. Settlement routing, offline payment audit, and release acceptance criteria remain. |
 | Maintainability (PR-02) | Payment recording extracted into a focused operation; template extraction and naming cleanup remain. |
 | Threats (PR-03) | Planned: document abuse and failure cases across authentication, payments, PDFs, and external services. |
-| Identity and sessions (PR-04/05) | Atomic reset/refresh, unique tokens, consistent deadlines, and server-side revocation implemented and tested. Shared IP/account rate limits are tested. Email verification, deployed proxy validation, replay escalation policy, and browser verification remain. |
+| Identity and sessions (PR-04/05) | Atomic reset/refresh, unique tokens, consistent deadlines, and server-side revocation implemented and tested. Shared IP/account rate limits are tested. Email verification and account gates are tested. Deployed proxy validation, replay escalation policy, and browser verification remain. |
 | Ownership (PR-06) | Cross-user invoice read/edit/send/delete and client selection tests passed. Wider auth/client workflows remain. Team roles are outside the current individual-user model. |
 | API security (PR-07) | Exact origin CSRF checks and bounded authentication bodies implemented/tested. Template escaping, URL restrictions, wider resource limits, and configuration checks remain. |
 | Privacy and retention (PR-08) | Planned: account export/deletion, retention rules, and redacted operational logs. |
 | Data correctness (PR-09) | Payment, numbering, rounding, deletion, and forward migration tests passed natively. Existing-data reconciliation, offline payment history, and identity snapshots remain. |
-| Integrations/jobs (PR-10) | Missing: durable email work, truthful delivery state, provider timeouts, and payment reconciliation. |
+| Integrations/jobs (PR-10) | Durable encrypted email jobs, provider acceptance state, retries, and timeouts are tested locally. Hosted workers, live provider delivery, backpressure, and payment reconciliation remain. |
 | Tests (PR-11) | Financial, invoice isolation, session, and migration regressions passed. OAuth, PDFs, provider sandboxes, and assembled frontend/API journeys remain. |
 | UX/contracts (PR-12) | Frontend edit/delete affordances and client-deletion copy need updates for the new 409 responses. Browser flows, session expiry, and accessible recovery remain unverified. |
 | Performance/resilience (PR-13/14) | Missing: pagination and PDF concurrency limits. Workload targets, shutdown, and recovery tests remain undefined. |

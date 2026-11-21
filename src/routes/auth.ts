@@ -1,12 +1,12 @@
 import { Hono, type Context } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 
 import { db as defaultDb, type DB } from "../db";
-import { users } from "../db/schema";
-import { sendMail } from "../lib/email";
+import { users, emailJobs } from "../db/schema";
+import { resendVerification, verifyEmail } from "../lib/email-verification";
 import {
   createSession,
   registerWithPassword,
@@ -21,7 +21,13 @@ import {
 import { createAuthMiddleware } from "../middleware/auth";
 import type { Variables } from "../types";
 
-export function createAuthRouter(database: DB = defaultDb) {
+export function createAuthRouter(
+  database: DB = defaultDb,
+  googleRequest: (
+    url: string,
+    options?: RequestInit,
+  ) => Promise<Response> = fetch,
+) {
   const db = database;
   const auth = new Hono<{ Variables: Variables }>();
   const authMiddleware = createAuthMiddleware(database);
@@ -81,6 +87,7 @@ export function createAuthRouter(database: DB = defaultDb) {
           user: {
             id: user.id,
             email: user.email,
+            emailVerifiedAt: user.emailVerifiedAt,
             fullName: user.fullName,
             businessName: user.businessName,
           },
@@ -113,6 +120,7 @@ export function createAuthRouter(database: DB = defaultDb) {
         user: {
           id: user.id,
           email: user.email,
+          emailVerifiedAt: user.emailVerifiedAt,
           fullName: user.fullName,
           businessName: user.businessName,
           logoUrl: user.logoUrl,
@@ -159,6 +167,7 @@ export function createAuthRouter(database: DB = defaultDb) {
     return c.json({
       id: user.id,
       email: user.email,
+      emailVerifiedAt: user.emailVerifiedAt,
       fullName: user.fullName,
       businessName: user.businessName,
       logoUrl: user.logoUrl,
@@ -199,6 +208,7 @@ export function createAuthRouter(database: DB = defaultDb) {
       return c.json({
         id: updated.id,
         email: updated.email,
+        emailVerifiedAt: updated.emailVerifiedAt,
         fullName: updated.fullName,
         businessName: updated.businessName,
         logoUrl: updated.logoUrl,
@@ -277,17 +287,20 @@ export function createAuthRouter(database: DB = defaultDb) {
     try {
       // exchange the authorization code for an access token
 
-      const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          code,
-          client_id: process.env.GOOGLE_CLIENT_ID!,
-          client_secret: process.env.GOOGLE_CLIENT_SECRET!,
-          redirect_uri: redirectUri,
-          grant_type: "authorization_code",
-        }),
-      });
+      const tokenRes = await googleRequest(
+        "https://oauth2.googleapis.com/token",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            code,
+            client_id: process.env.GOOGLE_CLIENT_ID!,
+            client_secret: process.env.GOOGLE_CLIENT_SECRET!,
+            redirect_uri: redirectUri,
+            grant_type: "authorization_code",
+          }),
+        },
+      );
 
       if (!tokenRes.ok) {
         console.error("Google token exchange failed:", await tokenRes.text());
@@ -300,7 +313,7 @@ export function createAuthRouter(database: DB = defaultDb) {
 
       // fetch the user's Google profile
 
-      const profileRes = await fetch(
+      const profileRes = await googleRequest(
         "https://www.googleapis.com/oauth2/v2/userinfo",
         {
           headers: { Authorization: `Bearer ${access_token}` },
@@ -311,13 +324,15 @@ export function createAuthRouter(database: DB = defaultDb) {
         return c.redirect(`${frontendUrl}/sign-in?error=google_profile_failed`);
       }
 
-      const googleUser = (await profileRes.json()) as {
-        id: string;
-        email: string;
-        name: string;
-        picture?: string;
-        verified_email: boolean;
-      };
+      const googleUser = z
+        .object({
+          id: z.string().min(1),
+          email: z.string().email(),
+          name: z.string().min(1),
+          picture: z.string().url().optional(),
+          verified_email: z.boolean(),
+        })
+        .parse(await profileRes.json());
 
       if (!googleUser.verified_email) {
         return c.redirect(
@@ -333,6 +348,14 @@ export function createAuthRouter(database: DB = defaultDb) {
       });
 
       if (user) {
+        if (
+          (user.googleId && user.googleId !== googleUser.id) ||
+          (!user.googleId && !user.emailVerifiedAt)
+        ) {
+          return c.redirect(
+            `${frontendUrl}/sign-in?error=verify_email_before_google_link`,
+          );
+        }
         // link the Google ID to the existing account if not already linked
         if (!user.googleId) {
           await db
@@ -341,6 +364,13 @@ export function createAuthRouter(database: DB = defaultDb) {
             .where(eq(users.id, user.id));
           user = { ...user, googleId: googleUser.id };
         }
+        await db
+          .update(users)
+          .set({
+            emailVerifiedAt: user.emailVerifiedAt ?? new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(users.id, user.id));
       } else {
         // first time — create a new account from the Google profile
         const [newUser] = await db
@@ -352,6 +382,7 @@ export function createAuthRouter(database: DB = defaultDb) {
             googleId: googleUser.id,
             logoUrl: googleUser.picture ?? null,
             passwordHash: null, // Google-only account — no password
+            emailVerifiedAt: new Date(),
           })
           .returning();
         user = newUser;
@@ -374,18 +405,9 @@ export function createAuthRouter(database: DB = defaultDb) {
     zValidator("json", z.object({ email: z.string().email() })),
     async (c) => {
       const { email } = c.req.valid("json");
-      const reset = await requestPasswordReset(db, email);
-      if (reset) {
-        const frontendUrl = process.env.FRONTEND_URL ?? "http://localhost:3000";
-        const resetUrl = `${frontendUrl}/reset-password?token=${reset.rawToken}`;
-        await sendMail({
-          to: reset.user.email,
-          subject: "Reset your Billd password",
-          html: buildResetEmail({ fullName: reset.user.fullName, resetUrl }),
-        });
-      }
+      await requestPasswordReset(db, email);
       return c.json({
-        message: "If that email exists, a reset link has been sent.",
+        message: "If that email exists, a reset email has been queued.",
       });
     },
   );
@@ -411,65 +433,36 @@ export function createAuthRouter(database: DB = defaultDb) {
     },
   );
 
-  return auth;
-}
+  auth.post("/resend-verification", authMiddleware, async (c) => {
+    await resendVerification(db, c.get("userId"));
+    return c.json(
+      { message: "If verification is needed, an email has been queued." },
+      202,
+    );
+  });
+  auth.get("/verification-status", authMiddleware, async (c) => {
+    const job = await db.query.emailJobs.findFirst({
+      where: and(
+        eq(emailJobs.userId, c.get("userId")),
+        eq(emailJobs.purpose, "verification"),
+      ),
+      orderBy: desc(emailJobs.createdAt),
+    });
+    return c.json({
+      data: job ? { status: job.status, acceptedAt: job.acceptedAt } : null,
+    });
+  });
+  auth.post(
+    "/verify-email",
+    authMiddleware,
+    zValidator("json", z.object({ token: z.string().regex(/^[a-f0-9]{64}$/) })),
+    async (c) => {
+      await verifyEmail(db, c.get("userId"), c.req.valid("json").token);
+      return c.json({ message: "Email verified successfully" });
+    },
+  );
 
-function buildResetEmail({
-  fullName,
-  resetUrl,
-}: {
-  fullName: string;
-  resetUrl: string;
-}): string {
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1.0">
-  <title>Reset your password</title>
-  <style>
-    body { margin:0; padding:0; background:#0a0f1e; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; }
-    .wrapper { max-width:520px; margin:0 auto; padding:40px 16px; }
-    .card { background:#0f172a; border:1px solid #1e293b; border-radius:16px; overflow:hidden; }
-    .section { padding:32px; }
-    @media only screen and (max-width:480px) {
-      .wrapper { padding:24px 12px; }
-      .section { padding:24px 20px; }
-    }
-  </style>
-</head>
-<body>
-  <div class="wrapper">
-    <div style="text-align:center;margin-bottom:28px;">
-      <div style="font-size:28px;font-weight:900;letter-spacing:-0.02em;background:linear-gradient(135deg,#2563eb,#7c3aed);-webkit-background-clip:text;-webkit-text-fill-color:transparent;color:#7c3aed;">Billd</div>
-    </div>
-    <div class="card">
-      <div style="height:4px;background:linear-gradient(90deg,#2563eb,#7c3aed,#ec4899);"></div>
-      <div class="section">
-        <p style="font-size:22px;font-weight:700;color:#fff;margin:0 0 8px;">Reset your password</p>
-        <p style="font-size:15px;color:#64748b;margin:0 0 28px;line-height:1.6;">
-          Hi ${fullName}, we received a request to reset your Billd password. Click the button below — this link expires in <strong style="color:#94a3b8;">1 hour</strong>.
-        </p>
-        <div style="text-align:center;margin-bottom:28px;">
-          <a href="${resetUrl}"
-             style="display:inline-block;background:linear-gradient(135deg,#2563eb,#7c3aed);color:#fff;font-size:15px;font-weight:700;text-decoration:none;padding:14px 36px;border-radius:12px;">
-            Reset password
-          </a>
-        </div>
-        <p style="font-size:13px;color:#475569;line-height:1.6;margin:0;">
-          If you didn't request this, you can safely ignore this email — your password won't change.
-        </p>
-        <p style="font-size:12px;color:#334155;margin:20px 0 0;word-break:break-all;">
-          Or copy this link: <a href="${resetUrl}" style="color:#60a5fa;">${resetUrl}</a>
-        </p>
-      </div>
-    </div>
-    <p style="text-align:center;color:#334155;font-size:11px;margin-top:24px;">
-      Sent via <strong>Billd</strong> — Professional invoicing for freelancers
-    </p>
-  </div>
-</body>
-</html>`;
+  return auth;
 }
 
 export default createAuthRouter();

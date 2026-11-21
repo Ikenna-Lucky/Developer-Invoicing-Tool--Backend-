@@ -84,7 +84,9 @@ drizzle/         SQL migrations
 
 ## API overview
 
-All routes except `/health` and `/auth/*` require an authenticated session (access token cookie).
+Client and invoice routes require an active, verified session (access token cookie).
+Profile, verification, and logout/recovery flows use the authentication rules described below.
+Paystack webhooks require a valid signature.
 
 **Health**
 
@@ -113,6 +115,77 @@ All routes except `/health` and `/auth/*` require an authenticated session (acce
 
 - `POST /paystack` — handles `charge.success`, `transfer.success`, and `invoice.payment_failed`
 
+## Email verification and queued delivery
+
+Migration `0007_email_verification_and_delivery` adds `email_verified_at`, one
+verification token per account, and a persistent email queue. Registration queues
+verification and creates the account/session in the same transaction. Verification
+is required before accessing clients, invoices, or the frontend dashboard. Sign-in,
+profile access, password recovery, verification, and logout remain available.
+Existing accounts are not silently marked verified; sign in and request a link.
+Fresh successful Google sign-ins confirm provider-verified addresses. Linking
+Google to an existing password account requires that account to be verified first.
+
+Deploy the backend and frontend together after applying migration 0007. The
+frontend now includes `/verify-email`, a dashboard gate, and email delivery status.
+Verification links expire after 24 hours, require sign-in to the matching account,
+and are consumed by an explicit POST, not by opening the link. Tokens use URL
+fragments and are not included in server access-log URLs. Only token hashes are
+stored in the token table. Resending replaces the old link, cancels its queued
+email, and has a one-minute cooldown plus the existing shared IP limits.
+
+Authenticated endpoints:
+
+- `POST /auth/verify-email` with `{ "token": "..." }`
+- `POST /auth/resend-verification` (202 means queued, not delivered)
+- `GET /auth/verification-status` (latest verification email state)
+- `GET /invoices/:id/email-deliveries` (owner only, latest 20 jobs)
+
+Before running this version, set `EMAIL_QUEUE_ENCRYPTION_KEY` to a new 64-character
+hexadecimal secret, generated with `openssl rand -hex 32`. Keep it outside Git and
+keep it stable while jobs are pending. This key encrypts queued recipients and
+email contents with AES-256-GCM; the job ID authenticates each payload. Changing
+the key without draining the queue makes old jobs unreadable. Terminal jobs erase
+the encrypted payload but retain status metadata. Queue history retention and
+operational alerts still need a policy.
+
+Set `RESEND_API_KEY` and `EMAIL_FROM`. The existing sandbox sender remains usable
+for the Resend account's own email; it cannot deliver to arbitrary recipients.
+After buying and verifying a domain, update `EMAIL_FROM`. The sender is captured
+when a job is queued, so old jobs retain their original sender. Production startup
+requires both the Resend key and queue encryption key. In development the queue
+worker starts only when both are configured; it is disabled in tests.
+
+The worker runs inside the API process, processing at most one job every two
+seconds per instance. It uses PostgreSQL leases and `SKIP LOCKED` for concurrent
+workers, recovers abandoned jobs after two minutes, and stops after six attempts.
+Network failures, provider 429/5xx, and concurrent-idempotency conflicts retry
+with exponential delay and jitter. Other provider errors fail without retry.
+Requests have a ten-second timeout. Each retry uses the same payload and Resend
+idempotency key; jobs expire within 23 hours of creation, inside Resend's 24-hour
+idempotency window. This is not an exactly-once delivery guarantee.
+
+Expired/superseded token emails are skipped. An email already in flight when its
+token is cancelled may still arrive, but its link cannot be used. A provider can
+accept an email before a worker loses its database acknowledgement; retries reuse
+the key to avoid duplicates. A final unresolved timeout can leave delivery
+uncertain. Investigate provider records before manually resending in that case.
+A sleeping/stopped Render instance does not process jobs: use an always-running
+service/worker before relying on prompt production delivery. No hosting changes
+have been made by this build.
+
+Invoice Send now atomically issues the invoice and queues its email, returning
+202 with a job ID. The financial `sent` status means issued; the frontend labels
+it Issued. Email state is separate: pending, processing, accepted, failed, or
+cancelled. Accepted means Resend accepted the request, not that a recipient inbox
+received it. Concurrent resends reuse pending work and have a one-minute cooldown
+for completed work. A queue insertion failure rolls invoice issuance back.
+Password reset also persists its token and queued email together; its public
+response remains generic for unknown accounts. Bounce/delivery webhook tracking,
+queue backpressure, hosted worker checks, and live inbox tests remain future work.
+
+Provider reference: [Resend idempotency keys](https://resend.com/docs/dashboard/emails/idempotency-keys).
+
 ## Deployment notes
 
 Session migration `0005_session_integrity` adds server-side session identifiers,
@@ -137,8 +210,7 @@ Concurrent refresh requests accept one winner and reject reused tokens with 401
 without clearing cookies. The frontend should coordinate refresh requests and
 handle logout failure before clearing local state. Automatic token-family
 revocation on replay is not implemented. New passwords are limited to 72 UTF-8
-bytes to avoid bcrypt truncation. Verification email and durable reset-email
-delivery remain separate work.
+bytes to avoid bcrypt truncation. Verification and email queue behavior are described above.
 
 Migration `0006_request_security` adds shared PostgreSQL authentication counters.
 Apply it before starting this backend. State-changing browser requests must send

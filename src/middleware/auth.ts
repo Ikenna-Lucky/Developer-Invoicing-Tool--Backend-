@@ -8,7 +8,10 @@ import { db, type DB } from "../db";
 import { users, refreshTokens } from "../db/schema";
 
 // Verify the session cookie and make the user available to route handlers.
-export function createAuthMiddleware(database: DB = db) {
+export function createAuthMiddleware(
+  database: DB = db,
+  requireVerified = false,
+) {
   return createMiddleware<{ Variables: Variables }>(async (c, next) => {
     const token = getCookie(c, "access_token");
 
@@ -27,7 +30,11 @@ export function createAuthMiddleware(database: DB = db) {
 
     // Check revocation outside the JWT catch so a database outage remains a server error.
     const [user] = await database
-      .select({ id: users.id, email: users.email })
+      .select({
+        id: users.id,
+        email: users.email,
+        emailVerifiedAt: users.emailVerifiedAt,
+      })
       .from(users)
       .innerJoin(refreshTokens, eq(refreshTokens.userId, users.id))
       .where(
@@ -42,6 +49,10 @@ export function createAuthMiddleware(database: DB = db) {
       .limit(1);
     if (!user)
       throw new HTTPException(401, { message: "Session is no longer valid" });
+    if (requireVerified && !user.emailVerifiedAt)
+      throw new HTTPException(403, {
+        message: "Verify your email before using the dashboard",
+      });
     c.set("userId", user.id);
     c.set("userEmail", user.email);
 

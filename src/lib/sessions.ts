@@ -4,6 +4,10 @@ import bcrypt from "bcryptjs";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import type { DB } from "../db";
+import { issueVerification } from "./email-verification";
+import { cancelTokenEmails, enqueueEmail } from "./email-queue";
+import { buildAccountEmail } from "./account-emails";
+import { frontendOrigin } from "../middleware/csrf";
 import {
   users,
   refreshTokens,
@@ -120,6 +124,7 @@ export async function registerWithPassword(
       throw new HTTPException(409, {
         message: "An account with this email already exists",
       });
+    await issueVerification(tx, user);
     return { user, session: await issueSession(tx, user, expiry()) };
   });
 }
@@ -227,6 +232,23 @@ export async function requestPasswordReset(database: DB, email: string) {
       tokenHash: hashToken(rawToken),
       expiresAt: new Date(Date.now() + 3_600_000),
     });
+    await cancelTokenEmails(tx, user.id, "password_reset");
+    const resetUrl = `${frontendOrigin()}/reset-password?token=${rawToken}`;
+    await enqueueEmail(tx, {
+      userId: user.id,
+      purpose: "password_reset",
+      tokenHash: hashToken(rawToken),
+      expiresAt: new Date(Date.now() + 3_600_000),
+      message: {
+        to: user.email,
+        subject: "Reset your Billd password",
+        html: buildAccountEmail({
+          fullName: user.fullName,
+          url: resetUrl,
+          purpose: "password_reset",
+        }),
+      },
+    });
     return { user, rawToken };
   });
 }
@@ -272,5 +294,6 @@ export async function resetPassword(
       .delete(passwordResetTokens)
       .where(eq(passwordResetTokens.userId, user.id));
     await tx.delete(refreshTokens).where(eq(refreshTokens.userId, user.id));
+    await cancelTokenEmails(tx, user.id, "password_reset");
   });
 }

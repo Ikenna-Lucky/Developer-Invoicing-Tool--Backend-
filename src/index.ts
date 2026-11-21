@@ -5,6 +5,7 @@ import { prettyJSON } from "hono/pretty-json";
 import { HTTPException } from "hono/http-exception";
 import { validateAuthConfiguration } from "./lib/jwt";
 import { db } from "./db";
+import { emailQueueKey, startEmailWorker } from "./lib/email-queue";
 import { createCsrfProtection, frontendOrigin } from "./middleware/csrf";
 import {
   createAuthBodyLimit,
@@ -63,6 +64,19 @@ app.notFound((c) => {
 });
 
 const port = parseInt(process.env.PORT ?? "3001");
+if (
+  process.env.NODE_ENV === "production" ||
+  process.env.EMAIL_QUEUE_ENCRYPTION_KEY
+)
+  emailQueueKey();
+if (process.env.NODE_ENV === "production" && !process.env.RESEND_API_KEY)
+  throw new Error("RESEND_API_KEY is required in production");
+if (
+  process.env.NODE_ENV !== "test" &&
+  process.env.RESEND_API_KEY &&
+  process.env.EMAIL_QUEUE_ENCRYPTION_KEY
+)
+  startEmailWorker(db);
 console.log(`🚀 API running on http://localhost:${port}`);
 
 export default {

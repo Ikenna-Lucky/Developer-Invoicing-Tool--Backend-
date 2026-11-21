@@ -1,51 +1,60 @@
-import { Resend } from "resend";
-
-// singleton client
-
-let _resend: Resend | null = null;
-
-function getClient(): Resend {
-  if (_resend) return _resend;
-
-  const apiKey = process.env.RESEND_API_KEY;
-  if (!apiKey) {
-    throw new Error("RESEND_API_KEY environment variable is required.");
-  }
-
-  _resend = new Resend(apiKey);
-  return _resend;
-}
-
-export interface SendMailOptions {
+export interface MailMessage {
+  from: string;
   to: string;
   subject: string;
   html: string;
-  /** Defaults to the Resend sandbox sender when omitted. */
-  from?: string;
 }
 
-// Delivery failures are logged and returned as false.
-export async function sendMail(opts: SendMailOptions): Promise<boolean> {
-  // Use the sandbox sender unless the caller supplies a verified From address.
-  const from = opts.from ?? "Billd <onboarding@resend.dev>";
+export type MailResult =
+  | { accepted: true; id: string }
+  | { accepted: false; retryable: boolean; code: string };
 
+export async function deliverMail(
+  message: MailMessage,
+  idempotencyKey: string,
+  request: (url: string, options: RequestInit) => Promise<Response> = fetch,
+): Promise<MailResult> {
+  const key = process.env.RESEND_API_KEY;
+  if (!key) return { accepted: false, retryable: true, code: "not_configured" };
   try {
-    const client = getClient();
-    const { error } = await client.emails.send({
-      from,
-      to: opts.to,
-      subject: opts.subject,
-      html: opts.html,
+    const response = await request("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json",
+        "Idempotency-Key": idempotencyKey,
+      },
+      body: JSON.stringify(message),
+      signal: AbortSignal.timeout(10_000),
     });
-
-    if (error) {
-      console.error("[email] Failed to send mail:", error);
-      return false;
+    if (!response.ok) {
+      let concurrent = false;
+      if (response.status === 409) {
+        const error = (await response.json()) as { name?: unknown };
+        concurrent = error.name === "concurrent_idempotent_requests";
+      }
+      return {
+        accepted: false,
+        retryable:
+          concurrent || response.status === 429 || response.status >= 500,
+        code: `provider_${response.status}`,
+      };
     }
-
-    return true;
-  } catch (err) {
-    console.error("[email] Failed to send mail:", err);
-    return false;
+    const data = (await response.json()) as { id?: unknown };
+    if (typeof data.id !== "string" || !data.id)
+      return { accepted: false, retryable: true, code: "invalid_response" };
+    return { accepted: true, id: data.id };
+  } catch {
+    return { accepted: false, retryable: true, code: "network_error" };
   }
+}
+
+export function escapeEmailHtml(value: string) {
+  return value.replace(
+    /[&<>"']/g,
+    (char) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
+        char
+      ]!,
+  );
 }

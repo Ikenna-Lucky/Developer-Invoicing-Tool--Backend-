@@ -11,6 +11,8 @@ const policies: Record<
 > = {
   "/auth/login": { limit: 30, seconds: 900, account: 10 },
   "/auth/register": { limit: 10, seconds: 3600 },
+  "/auth/resend-verification": { limit: 10, seconds: 3600 },
+  "/auth/verify-email": { limit: 30, seconds: 900 },
   "/auth/forgot-password": { limit: 10, seconds: 3600, account: 3 },
   "/auth/reset-password": { limit: 20, seconds: 900 },
   "/auth/refresh": { limit: 120, seconds: 60 },

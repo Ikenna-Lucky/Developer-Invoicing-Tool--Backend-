@@ -47,6 +47,17 @@ test("session migration backfills existing rows without losing their hashes", as
   ).toBe(0);
 });
 
+test("email migration does not treat existing accounts as already verified", async () => {
+  const user = await database.query.users.findFirst({
+    where: eq(users.id, userId),
+  });
+  expect(user?.emailVerifiedAt).toBeNull();
+  expect(await database.query.emailVerificationTokens.findMany()).toHaveLength(
+    0,
+  );
+  expect(await database.query.emailJobs.findMany()).toHaveLength(0);
+});
+
 test("migration retains the latest reset token and enforces one token per account", async () => {
   const tokens = await database.query.passwordResetTokens.findMany({
     where: eq(passwordResetTokens.userId, userId),

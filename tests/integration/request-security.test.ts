@@ -22,6 +22,8 @@ const context = createTestDatabase();
 const { database, client } = context;
 const origin = "https://billd.example";
 beforeAll(async () => {
+  process.env.EMAIL_QUEUE_ENCRYPTION_KEY =
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
   await context.create();
   await migrate(database, {
     migrationsFolder: fileURLToPath(new URL("../../drizzle/", import.meta.url)),

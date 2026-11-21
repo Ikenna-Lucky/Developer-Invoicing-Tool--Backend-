@@ -13,6 +13,7 @@ import {
   deleteClientWithoutInvoices,
 } from "../../src/lib/invoices";
 import { recordPaystackPayment } from "../../src/lib/payments";
+import { decryptEmail, processNextEmail } from "../../src/lib/email-queue";
 
 const context = createTestDatabase();
 const { client, database } = context;
@@ -25,6 +26,8 @@ let clientsRouter: ReturnType<
 let createSession: typeof import("../../src/lib/sessions").createSession;
 
 beforeAll(async () => {
+  process.env.EMAIL_QUEUE_ENCRYPTION_KEY =
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
   await context.create();
   await migrate(database, {
     migrationsFolder: fileURLToPath(new URL("../../drizzle/", import.meta.url)),
@@ -35,6 +38,7 @@ beforeAll(async () => {
   process.env.JWT_REFRESH_SECRET =
     "invoice-tests-refresh-secret-at-least-32-bytes";
   delete process.env.RESEND_API_KEY;
+  delete process.env.PAYSTACK_SECRET_KEY;
   invoicesRouter = (
     await import("../../src/routes/invoices")
   ).createInvoicesRouter(database);
@@ -53,7 +57,12 @@ async function owner() {
     email = `${userId}@example.test`;
   await database
     .insert(schema.users)
-    .values({ id: userId, email, fullName: "Test Owner" });
+    .values({
+      id: userId,
+      email,
+      fullName: "Test Owner",
+      emailVerifiedAt: new Date(),
+    });
   await database.insert(schema.clients).values({
     id: clientId,
     userId,
@@ -453,7 +462,7 @@ test("concurrent sends accept one status change and cannot overwrite a paid invo
     ),
   );
   expect(responses.map((response) => response.status).sort()).toEqual([
-    200, 409,
+    202, 409,
   ]);
   await changeInvoiceStatus(
     database,
@@ -476,4 +485,108 @@ test("concurrent sends accept one status change and cannot overwrite a paid invo
       })
     )?.status,
   ).toBe("paid");
+});
+
+test("issuing an invoice queues email atomically and exposes truthful, owner-scoped status", async () => {
+  const account = await fixture();
+  await updateDraftInvoice(database, account.userId, account.invoice.id, {
+    notes: "<script>unsafe</script>",
+  });
+  const ownHeaders = await headers(account);
+  const response = await invoicesRouter.request(`/${account.invoice.id}/send`, {
+    method: "POST",
+    headers: ownHeaders,
+  });
+  expect(response.status).toBe(202);
+  const body = (await response.json()) as {
+    email: { id: string; status: string };
+  };
+  expect(body.email.status).toBe("pending");
+  const job = (await database.query.emailJobs.findFirst({
+    where: eq(schema.emailJobs.id, body.email.id),
+  }))!;
+  expect(decryptEmail(job.id, job.payload!).html).toContain(
+    "&lt;script&gt;unsafe&lt;/script&gt;",
+  );
+  const status = await invoicesRouter.request(
+    `/${account.invoice.id}/email-deliveries`,
+    { headers: ownHeaders },
+  );
+  expect(status.status).toBe(200);
+  const data = (await status.json()) as { data: { status: string }[] };
+  expect(data.data[0].status).toBe("pending");
+  const stranger = await owner();
+  expect(
+    (
+      await invoicesRouter.request(`/${account.invoice.id}/email-deliveries`, {
+        headers: await headers(stranger),
+      })
+    ).status,
+  ).toBe(404);
+  while (
+    await processNextEmail(database, async () => ({
+      accepted: true,
+      id: "mock-provider-id",
+    }))
+  ) {}
+  expect(
+    (await database.query.emailJobs.findFirst({
+      where: eq(schema.emailJobs.id, job.id),
+    }))!.status,
+  ).toBe("accepted");
+});
+
+test("concurrent resends reuse pending work instead of sending duplicate emails", async () => {
+  const account = await fixture();
+  const ownHeaders = await headers(account);
+  const sent = await invoicesRouter.request(`/${account.invoice.id}/send`, {
+    method: "POST",
+    headers: ownHeaders,
+  });
+  expect(sent.status).toBe(202);
+  const results = await Promise.all(
+    Array.from({ length: 3 }, () =>
+      invoicesRouter.request(`/${account.invoice.id}/resend`, {
+        method: "POST",
+        headers: ownHeaders,
+      }),
+    ),
+  );
+  for (const response of results) expect(response.status).toBe(202);
+  expect(
+    await database.query.emailJobs.findMany({
+      where: eq(schema.emailJobs.invoiceId, account.invoice.id),
+    }),
+  ).toHaveLength(1);
+});
+
+test("an email queue failure leaves an invoice editable instead of falsely issued", async () => {
+  const account = await fixture();
+  await client.unsafe(
+    "CREATE FUNCTION fail_invoice_mail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected invoice enqueue failure'; END $$; CREATE TRIGGER fail_invoice_mail BEFORE INSERT ON email_jobs FOR EACH ROW EXECUTE FUNCTION fail_invoice_mail()",
+  );
+  try {
+    expect(
+      (
+        await invoicesRouter.request(`/${account.invoice.id}/send`, {
+          method: "POST",
+          headers: await headers(account),
+        })
+      ).status,
+    ).toBe(500);
+    expect(
+      (await database.query.invoices.findFirst({
+        where: eq(schema.invoices.id, account.invoice.id),
+      }))!.status,
+    ).toBe("draft");
+    expect(
+      await database.query.emailJobs.findMany({
+        where: eq(schema.emailJobs.invoiceId, account.invoice.id),
+      }),
+    ).toHaveLength(0);
+  } finally {
+    await client.unsafe(
+      "DROP TRIGGER fail_invoice_mail ON email_jobs; DROP FUNCTION fail_invoice_mail()",
+    );
+  }
 });

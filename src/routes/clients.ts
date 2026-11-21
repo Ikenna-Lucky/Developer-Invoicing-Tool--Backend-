@@ -15,7 +15,7 @@ export function createClientsRouter(database: DB = defaultDb) {
   const db = database;
   const clientsRouter = new Hono<{ Variables: Variables }>();
 
-  clientsRouter.use("*", createAuthMiddleware(database));
+  clientsRouter.use("*", createAuthMiddleware(database, true));
 
   const createClientSchema = z.object({
     name: z.string().min(2, "Name must be at least 2 characters"),
