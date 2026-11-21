@@ -24,7 +24,6 @@ const REFRESH_COOKIE = "refresh_token";
 const ACCESS_COOKIE = "access_token";
 const IS_PROD = process.env.NODE_ENV === "production";
 
-// helpers
 
 function generateId(): string {
   return crypto.randomUUID();
@@ -34,9 +33,7 @@ function setAuthCookies(c: any, accessToken: string, refreshToken: string) {
   const cookieOptions = {
     httpOnly: true,
     secure: IS_PROD,
-    // SameSite=None is needed for cross-site cookies (netlify.app → onrender.com),
-    // and it has to be paired with Secure=true, which is only true in prod.
-    // Locally everything's same-origin so Lax is fine.
+    // Production uses cross-site cookies; local development uses SameSite=Lax.
     sameSite: (IS_PROD ? "None" : "Lax") as "None" | "Lax",
     path: "/",
   };
@@ -70,7 +67,6 @@ auth.post(
   async (c) => {
     const { fullName, email, password } = c.req.valid("json");
 
-    // Check if email already in use
     const existing = await db.query.users.findFirst({
       where: eq(users.email, email.toLowerCase()),
     });
@@ -82,11 +78,9 @@ auth.post(
       );
     }
 
-    // cost factor 10 — 12 adds ~300ms of blocking CPU with no real security gain here
     const passwordHash = await bcrypt.hash(password, 10);
     const userId = generateId();
 
-    // Create user
     const [user] = await db
       .insert(users)
       .values({
@@ -97,7 +91,6 @@ auth.post(
       })
       .returning();
 
-    // Issue tokens
     const accessToken = await signAccessToken({
       sub: user.id,
       email: user.email,
@@ -107,7 +100,6 @@ auth.post(
       email: user.email,
     });
 
-    // Store hashed refresh token
     await db.insert(refreshTokens).values({
       id: generateId(),
       userId: user.id,
@@ -161,7 +153,6 @@ auth.post(
       );
     }
 
-    // constant-time comparison to avoid timing attacks
     if (!user || !(await bcrypt.compare(password, user.passwordHash!))) {
       return c.json({ error: "Invalid email or password" }, 401);
     }
@@ -172,7 +163,6 @@ auth.post(
       : (process.env.JWT_REFRESH_EXPIRES_IN ?? "7d");
     const cookieMaxAge = rememberMe ? 60 * 60 * 24 * 30 : 60 * 60 * 24 * 7;
 
-    // Issue tokens
     const accessToken = await signAccessToken({
       sub: user.id,
       email: user.email,
@@ -182,7 +172,6 @@ auth.post(
       refreshTTL,
     );
 
-    // Store hashed refresh token
     await db.insert(refreshTokens).values({
       id: generateId(),
       userId: user.id,
@@ -281,20 +270,16 @@ auth.post("/refresh", async (c) => {
 auth.post("/logout", async (c) => {
   const token = getCookie(c, REFRESH_COOKIE);
 
-  // Clear cookies first — this is what actually signs the user out. If a Neon
-  // cold-start makes the DB call below slow or throw, we don't want that to
-  // leave stale cookies around and trap the user in a sign-in/dashboard loop.
+  // Clear the browser cookies even if database revocation fails.
   clearAuthCookies(c);
 
-  // Revoking the token in the DB is best-effort. If it fails, the token just
-  // sits there until it expires naturally in 7 days — the user's already
-  // signed out either way.
+  // Attempt revocation without delaying the logout response.
   if (token) {
     db.update(refreshTokens)
       .set({ revoked: true })
       .where(eq(refreshTokens.tokenHash, hashToken(token)))
       .catch(() => {
-        /* non-critical — token expires naturally */
+        /* Revocation failures leave the token valid until expiry. */
       });
   }
 
@@ -383,7 +368,7 @@ auth.get("/google", (c) => {
     secure: IS_PROD,
     sameSite: "Lax",
     path: "/",
-    maxAge: 60 * 10, // 10 minutes — plenty of time to complete the OAuth flow
+    maxAge: 60 * 10, // Allow 10 minutes to complete sign-in.
   });
 
   const params = new URLSearchParams({
@@ -478,8 +463,7 @@ auth.get("/google/callback", async (c) => {
     // find or create the account
 
     let user = await db.query.users.findFirst({
-      // match by google_id if we can, otherwise fall back to email so existing
-      // email/password accounts get linked on first Google sign-in
+      // Link an existing account using Google's verified email address.
       where: eq(users.email, googleUser.email.toLowerCase()),
     });
 
@@ -620,19 +604,17 @@ auth.post(
       );
     }
 
-    // Update password
     const passwordHash = await bcrypt.hash(password, 10);
     await db
       .update(users)
       .set({ passwordHash, updatedAt: new Date() })
       .where(eq(users.id, record.userId));
 
-    // Delete the used token
     await db
       .delete(passwordResetTokens)
       .where(eq(passwordResetTokens.id, record.id));
 
-    // Revoke all existing sessions for security
+    // Remove refresh tokens; issued access tokens remain valid until expiry.
     await db
       .delete(refreshTokens)
       .where(eq(refreshTokens.userId, record.userId));
@@ -643,7 +625,6 @@ auth.post(
   },
 );
 
-// reset password email template
 function buildResetEmail({
   fullName,
   resetUrl,

@@ -9,8 +9,6 @@ export interface JWTPayload {
   email: string;
 }
 
-// sign
-
 export async function signAccessToken(payload: JWTPayload): Promise<string> {
   return new SignJWT({ ...payload })
     .setProtectedHeader({ alg: "HS256" })
@@ -30,8 +28,6 @@ export async function signRefreshToken(
     .sign(refreshSecret);
 }
 
-// verify
-
 export async function verifyAccessToken(token: string): Promise<JWTPayload> {
   const { payload } = await jwtVerify(token, accessSecret);
   return { sub: payload.sub as string, email: payload.email as string };
@@ -42,14 +38,12 @@ export async function verifyRefreshToken(token: string): Promise<JWTPayload> {
   return { sub: payload.sub as string, email: payload.email as string };
 }
 
-// helpers
-
-/** Hash a refresh token before storing in DB (prevents exposure if DB leaks) */
+// Store a hash so a database leak does not expose usable tokens.
 export function hashToken(token: string): string {
   return crypto.createHash("sha256").update(token).digest("hex");
 }
 
-/** Parse "7d", "15m" etc. into a future Date for DB storage */
+// Convert the configured token lifetime to a database expiry timestamp.
 export function tokenExpiryDate(duration: string): Date {
   const unit = duration.slice(-1);
   const value = parseInt(duration.slice(0, -1), 10);

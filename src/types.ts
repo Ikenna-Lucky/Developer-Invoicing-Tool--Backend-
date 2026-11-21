@@ -1,6 +1,4 @@
-// Values attached by authMiddleware via c.set() and read by route handlers via
-// c.get(). Passing this type to Hono<{ Variables: Variables }> makes
-// c.get("userId") return `string` instead of `unknown`.
+// Auth middleware sets these values for protected route handlers.
 
 export type Variables = {
   userId: string;

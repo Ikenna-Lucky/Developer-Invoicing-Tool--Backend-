@@ -688,15 +688,8 @@ ${watermark}
 
 let _browser: Awaited<ReturnType<typeof puppeteer.launch>> | null = null;
 
-/**
- * Reuse a single Chromium browser across requests instead of launching a new
- * one per PDF. executablePath is set explicitly since relying on the
- * PUPPETEER_EXECUTABLE_PATH env var alone isn't reliable on Render's Docker
- * image. --no-zygote and --single-process keep memory down on the 512MB free
- * tier (Chromium's extra zygote processes can otherwise trigger an OOM kill),
- * and --disable-dev-shm-usage routes shared memory to /tmp since /dev/shm is
- * usually too small (64MB) inside containers.
- */
+// Reuse Chromium across requests. Launch flags reduce container memory usage;
+// the executable defaults to the path installed by the Dockerfile.
 async function getBrowser() {
   if (!_browser || !_browser.connected) {
     const executablePath =
@@ -773,7 +766,7 @@ async function _generatePDF(html: string): Promise<Buffer> {
       try {
         await _browser.close();
       } catch {
-        /* ignore */
+        /* The browser or page may already be closed. */
       }
       _browser = null;
     }
@@ -795,9 +788,7 @@ export async function generateInvoicePDF(input: PDFInput): Promise<Buffer> {
   try {
     return await _generatePDF(html);
   } catch (firstErr) {
-    // Chromium occasionally gets OOM-killed mid-render on Render's free tier.
-    // The first attempt resets the browser singleton above, so retry once
-    // with a fresh process before giving up.
+    // Rendering failures reset the browser, so retry once with a fresh process.
     console.warn("[pdf] First attempt failed, retrying once:", firstErr);
     try {
       return await _generatePDF(html);

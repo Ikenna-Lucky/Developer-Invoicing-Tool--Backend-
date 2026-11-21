@@ -96,7 +96,7 @@ async function handleChargeSuccess(
     return;
   }
 
-  // idempotency — skip if already marked paid
+  // Skip invoices already marked paid; this check does not serialize concurrent events.
   if (invoice.status === "paid") {
     console.log("[Webhook] charge.success — invoice already paid:", invoiceId);
     return;
@@ -153,8 +153,7 @@ async function handleTransferSuccess(
   // could notify ourselves here, or persist a transfers log table later
 }
 
-// Fired when a Paystack subscription invoice payment fails. Just logged for
-// now — extend to flip the invoice to "overdue" if subscriptions get added.
+// Subscription payment failures are logged without changing Billd invoices.
 async function handleInvoicePaymentFailed(
   data: PaystackInvoicePaymentFailedData,
 ): Promise<void> {
@@ -197,7 +196,7 @@ webhooksRouter.post("/paystack", async (c) => {
   const { event, data } = payload;
   console.log(`[Webhook] Received event: ${event}`);
 
-  // always return 200 to Paystack even if handling fails below
+  // Processing errors are logged but still acknowledged with 200.
   try {
     switch (event) {
       case "charge.success":

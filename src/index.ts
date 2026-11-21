@@ -10,10 +10,8 @@ import clients from "./routes/clients";
 import invoices from "./routes/invoices";
 import webhooks from "./routes/webhooks";
 
-// --- App Setup ---
 const app = new Hono();
 
-// --- Global Middleware ---
 app.use(
   "*",
   cors({
@@ -26,14 +24,12 @@ app.use(
 app.use("*", logger());
 app.use("*", prettyJSON());
 
-// --- Routes ---
 app.route("/health", health);
 app.route("/auth", auth);
 app.route("/clients", clients);
 app.route("/invoices", invoices);
 app.route("/webhooks", webhooks);
 
-// --- Root ---
 app.get("/", (c) => {
   return c.json({
     message: "Developer Invoicing API",
@@ -42,7 +38,6 @@ app.get("/", (c) => {
   });
 });
 
-// --- Global Error Handler ---
 app.onError((err, c) => {
   if (err instanceof HTTPException) {
     return c.json({ error: err.message }, err.status);
@@ -51,12 +46,10 @@ app.onError((err, c) => {
   return c.json({ error: "Internal server error" }, 500);
 });
 
-// --- 404 Handler ---
 app.notFound((c) => {
   return c.json({ error: `Route ${c.req.path} not found` }, 404);
 });
 
-// --- Start Server ---
 const port = parseInt(process.env.PORT ?? "3001");
 console.log(`🚀 API running on http://localhost:${port}`);
 

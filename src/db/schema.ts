@@ -8,7 +8,6 @@ import {
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 
-// Enums
 export const invoiceStatusEnum = pgEnum("invoice_status", [
   "draft",
   "sent",
@@ -16,7 +15,6 @@ export const invoiceStatusEnum = pgEnum("invoice_status", [
   "overdue",
 ]);
 
-// Users
 export const users = pgTable("users", {
   id: text("id").primaryKey(),
   email: text("email").notNull().unique(),
@@ -55,7 +53,6 @@ export const passwordResetTokens = pgTable("password_reset_tokens", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
-// Clients
 export const clients = pgTable("clients", {
   id: text("id").primaryKey(),
   userId: text("user_id")
@@ -70,7 +67,6 @@ export const clients = pgTable("clients", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
-// Invoices
 export const invoices = pgTable("invoices", {
   id: text("id").primaryKey(),
   userId: text("user_id")
@@ -85,15 +81,14 @@ export const invoices = pgTable("invoices", {
   dueDate: timestamp("due_date").notNull(),
   totalAmount: numeric("total_amount", { precision: 10, scale: 2 }).notNull(),
   notes: text("notes"),
-  pdfUrl: text("pdf_url"), // Cloudinary URL
-  stripePaymentLink: text("stripe_payment_link"),
+  pdfUrl: text("pdf_url"), // Reserved for a stored PDF URL.
+  stripePaymentLink: text("stripe_payment_link"), // Stores the Paystack checkout URL.
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
-  // soft delete — invoices stick around for 30 days after "deletion" so they can be restored
+  // A timestamp moves the invoice to Trash; null keeps it active.
   deletedAt: timestamp("deleted_at"),
 });
 
-// Invoice items
 export const invoiceItems = pgTable("invoice_items", {
   id: text("id").primaryKey(),
   invoiceId: text("invoice_id")
@@ -106,7 +101,6 @@ export const invoiceItems = pgTable("invoice_items", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
-// Payments
 export const payments = pgTable("payments", {
   id: text("id").primaryKey(),
   invoiceId: text("invoice_id")
@@ -114,7 +108,7 @@ export const payments = pgTable("payments", {
     .references(() => invoices.id, { onDelete: "cascade" }),
   amountPaid: numeric("amount_paid", { precision: 10, scale: 2 }).notNull(),
   paidAt: timestamp("paid_at").notNull(),
-  stripePaymentId: text("stripe_payment_id").unique(),
+  stripePaymentId: text("stripe_payment_id").unique(), // Stores the Paystack reference.
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -145,7 +139,6 @@ export const paymentsRelations = relations(payments, ({ one }) => ({
   }),
 }));
 
-// Inferred types
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type RefreshToken = typeof refreshTokens.$inferSelect;

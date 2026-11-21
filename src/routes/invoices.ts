@@ -40,7 +40,7 @@ const updateStatusSchema = z.object({
 });
 
 // Finds the highest existing invoice number for this user and increments it.
-// INV-0001, INV-0002, ... INV-9999
+// Uses at least four digits, starting at INV-0001.
 async function generateInvoiceNumber(userId: string): Promise<string> {
   const existing = await db
     .select({ invoiceNumber: invoices.invoiceNumber })
@@ -314,7 +314,7 @@ invoicesRouter.put(
   },
 );
 
-// PATCH /invoices/:id/status — draft→sent, sent→paid, etc.
+// PATCH /invoices/:id/status — manually sets any supported status.
 invoicesRouter.patch(
   "/:id/status",
   zValidator("json", updateStatusSchema),
@@ -341,9 +341,7 @@ invoicesRouter.patch(
   },
 );
 
-// POST /invoices/:id/send — creates a Paystack payment link, marks the invoice
-// sent, and fires the email in the background so Render's 90s gateway timeout
-// can't cut the request off mid-send.
+// POST /invoices/:id/send — creates a payment link and starts email delivery.
 invoicesRouter.post("/:id/send", async (c) => {
   const userId = c.get("userId");
   const invoiceId = c.req.param("id");
@@ -361,9 +359,7 @@ invoicesRouter.post("/:id/send", async (c) => {
   const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
   if (!user) return c.json({ error: "User not found" }, 404);
 
-  // Generate the Paystack link with an 8s timeout so a slow/unresponsive
-  // Paystack never hangs the request — non-fatal, we just send without a
-  // link if it fails.
+  // Send without a payment link if Paystack fails or takes longer than 8 seconds.
   let paymentLink: string | null = null;
 
   const paystackKey = process.env.PAYSTACK_SECRET_KEY;
@@ -412,9 +408,7 @@ invoicesRouter.post("/:id/send", async (c) => {
     }
   }
 
-  // Update the invoice before returning, so the DB stays consistent even if
-  // the background email fails, and so a gateway-timeout retry doesn't hit
-  // "Only draft invoices can be sent" on the second attempt.
+  // Mark the invoice sent before starting background email delivery.
   await db
     .update(invoices)
     .set({
@@ -429,10 +423,7 @@ invoicesRouter.post("/:id/send", async (c) => {
     with: { items: true, client: true },
   });
 
-  // Not awaited — the response is already on its way back, Bun keeps the
-  // process alive long enough to finish sending the email out-of-band.
-  // `from` is omitted so email.ts falls back to the Resend sandbox sender;
-  // set RESEND_FROM once a custom domain is verified.
+  // Delivery runs in the background and is not guaranteed by this response.
   const senderName = user.businessName ?? user.fullName;
 
   sendMail({
@@ -482,7 +473,7 @@ invoicesRouter.post("/:id/resend", async (c) => {
   return c.json({ message: "Invoice resent successfully" });
 });
 
-// DELETE /invoices/:id — soft delete, moves to Trash, restorable for 30 days
+// DELETE /invoices/:id — moves the invoice to Trash until restored or permanently deleted.
 invoicesRouter.delete("/:id", async (c) => {
   const userId = c.get("userId");
   const invoiceId = c.req.param("id");

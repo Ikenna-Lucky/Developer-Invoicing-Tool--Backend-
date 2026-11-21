@@ -8,9 +8,7 @@ import { clients } from "../db/schema";
 import { authMiddleware } from "../middleware/auth";
 import type { Variables } from "../types";
 
-// All routes here are protected by authMiddleware, which sets c.get("userId").
-// Every query below is scoped with eq(clients.userId, userId) so one user can't
-// read or delete another user's clients just by guessing an ID (IDOR).
+// Keep every client query scoped to the signed-in user.
 
 const clientsRouter = new Hono<{ Variables: Variables }>();
 

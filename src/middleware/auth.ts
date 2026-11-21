@@ -4,12 +4,7 @@ import { HTTPException } from "hono/http-exception";
 import { verifyAccessToken } from "../lib/jwt";
 import type { Variables } from "../types";
 
-/**
- * Auth middleware — verifies the access_token httpOnly cookie on every
- * protected route. Attaches userId and userEmail to the Hono context.
- *
- * Usage:  route.get("/protected", authMiddleware, (c) => { ... })
- */
+// Verify the session cookie and make the user available to route handlers.
 export const authMiddleware = createMiddleware<{ Variables: Variables }>(
   async (c, next) => {
     const token = getCookie(c, "access_token");

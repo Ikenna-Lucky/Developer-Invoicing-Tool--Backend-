@@ -20,19 +20,13 @@ export interface SendMailOptions {
   to: string;
   subject: string;
   html: string;
-  /** Override the From address. Defaults to EMAIL_FROM env var. */
+  /** Defaults to the Resend sandbox sender when omitted. */
   from?: string;
 }
 
-/**
- * Send a transactional email via Resend (HTTPS — works on Render free tier).
- * Returns true on success, false on failure (non-fatal — caller decides).
- */
+// Delivery failures are logged and returned as false.
 export async function sendMail(opts: SendMailOptions): Promise<boolean> {
-  // EMAIL_FROM holds the Gmail address used for SMTP / forgot-password, which
-  // Resend's domain check would reject, so we skip it here and fall back to
-  // Resend's sandbox sender until a custom domain is verified, e.g.
-  // "Billd <invoices@yourdomain.com>"
+  // Use the sandbox sender unless the caller supplies a verified From address.
   const from = opts.from ?? "Billd <onboarding@resend.dev>";
 
   try {
