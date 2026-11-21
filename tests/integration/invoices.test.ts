@@ -22,7 +22,7 @@ let invoicesRouter: ReturnType<
 let clientsRouter: ReturnType<
   typeof import("../../src/routes/clients").createClientsRouter
 >;
-let signAccessToken: typeof import("../../src/lib/jwt").signAccessToken;
+let createSession: typeof import("../../src/lib/sessions").createSession;
 
 beforeAll(async () => {
   await context.create();
@@ -30,8 +30,10 @@ beforeAll(async () => {
     migrationsFolder: fileURLToPath(new URL("../../drizzle/", import.meta.url)),
   });
   process.env.DATABASE_URL = "postgresql://unused:unused@localhost:5432/unused";
-  process.env.JWT_ACCESS_SECRET = "invoice-tests-access-secret";
-  process.env.JWT_REFRESH_SECRET = "invoice-tests-refresh-secret";
+  process.env.JWT_ACCESS_SECRET =
+    "invoice-tests-access-secret-at-least-32-bytes";
+  process.env.JWT_REFRESH_SECRET =
+    "invoice-tests-refresh-secret-at-least-32-bytes";
   delete process.env.RESEND_API_KEY;
   invoicesRouter = (
     await import("../../src/routes/invoices")
@@ -39,7 +41,7 @@ beforeAll(async () => {
   clientsRouter = (
     await import("../../src/routes/clients")
   ).createClientsRouter(database);
-  signAccessToken = (await import("../../src/lib/jwt")).signAccessToken;
+  createSession = (await import("../../src/lib/sessions")).createSession;
 }, 30_000);
 afterAll(async () => {
   await context.close();
@@ -52,14 +54,12 @@ async function owner() {
   await database
     .insert(schema.users)
     .values({ id: userId, email, fullName: "Test Owner" });
-  await database
-    .insert(schema.clients)
-    .values({
-      id: clientId,
-      userId,
-      name: "Test Client",
-      email: "client@example.test",
-    });
+  await database.insert(schema.clients).values({
+    id: clientId,
+    userId,
+    name: "Test Client",
+    email: "client@example.test",
+  });
   return { userId, clientId, email };
 }
 
@@ -83,9 +83,10 @@ async function fixture() {
 }
 
 async function headers(account: { userId: string; email: string }) {
+  const session = await createSession(database, account.userId);
   return {
     "Content-Type": "application/json",
-    Cookie: `access_token=${await signAccessToken({ sub: account.userId, email: account.email })}`,
+    Cookie: `access_token=${session.accessToken}`,
   };
 }
 

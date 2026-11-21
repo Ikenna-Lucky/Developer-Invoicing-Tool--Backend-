@@ -12,7 +12,7 @@ import {
   lockOwnedInvoice,
 } from "../lib/invoices";
 import { invoices, invoiceItems, clients, users } from "../db/schema";
-import { authMiddleware } from "../middleware/auth";
+import { createAuthMiddleware } from "../middleware/auth";
 import { generateInvoicePDF } from "../lib/pdf";
 import { sendMail } from "../lib/email";
 import type { Variables } from "../types";
@@ -21,7 +21,7 @@ export function createInvoicesRouter(database: DB = defaultDb) {
   const db = database;
   const invoicesRouter = new Hono<{ Variables: Variables }>();
 
-  invoicesRouter.use("*", authMiddleware);
+  invoicesRouter.use("*", createAuthMiddleware(database));
 
   const lineItemSchema = z.object({
     description: z.string().min(1, "Description is required"),

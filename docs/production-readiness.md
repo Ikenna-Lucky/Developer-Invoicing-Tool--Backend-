@@ -41,9 +41,31 @@ separate work: changing a client profile can still affect regenerated documents.
 
 ## Verification
 
+Session hardening adds unique JWT identifiers, explicit token purpose/issuer/
+audience/algorithm checks, atomic refresh replacement, absolute session deadlines,
+and server-side revocation checks. Password reset consumes the token, changes the
+password, increments the account session version, and removes sessions in one
+transaction. Registration also rolls back if session persistence fails.
+
+Migration 0005 backfills session IDs and retains only the latest outstanding reset
+link per account before enforcing uniqueness. Legacy JWTs are intentionally
+rejected after deployment; users must sign in again. Server-side checks add a
+database query to authenticated requests. Previously authorized requests can
+finish after revocation. Frontend refresh coordination and truthful logout failure
+handling remain necessary. Reused refresh tokens are rejected, but automatic
+family revocation on replay is deferred to avoid treating benign simultaneous
+refresh requests as account compromise.
+
+Additional native Bun/PostgreSQL tests cover refresh uniqueness and concurrency,
+reset single-use and rollback, logout/reset/refresh/login races, cookie deadlines,
+per-device revocation, cross-account reset isolation, configuration validation,
+legacy-token rejection, and migration from the previous session schema. Injected
+database failures verify error responses; external email/OAuth and browser flows
+remain unverified. Only disposable databases were migrated.
+
 On 21 November 2026, TypeScript checking passed for source, scripts, and tests.
-The workflow YAML parsed successfully. Native Bun 1.4.5 passed six
-webhook/validation tests and 28 PostgreSQL integration tests, with no skips.
+The workflow YAML parsed successfully. Native Bun 1.4.5 passed 63 tests:
+13 webhook/authentication checks and 50 PostgreSQL integration tests, with no skips.
 
 Initial execution used Node 24 with a temporary compatibility adapter. The final
 run used a portable Bun 1.4.5 binary verified against the npm package integrity
@@ -79,13 +101,13 @@ Re-run these checks after payment, schema, runtime, or dependency changes.
 | Product rules (PR-01) | Invoice transitions and draft-only editing/deletion implemented. Settlement routing, offline payment audit, and release acceptance criteria remain. |
 | Maintainability (PR-02) | Payment recording extracted into a focused operation; template extraction and naming cleanup remain. |
 | Threats (PR-03) | Planned: document abuse and failure cases across authentication, payments, PDFs, and external services. |
-| Identity and sessions (PR-04/05) | Missing safeguards: email verification, rate limits, atomic reset/refresh, unique refresh tokens, and consistent session lifetimes. |
+| Identity and sessions (PR-04/05) | Atomic reset/refresh, unique tokens, consistent deadlines, and server-side revocation implemented and tested. Email verification, rate limits, replay escalation policy, and browser verification remain. |
 | Ownership (PR-06) | Cross-user invoice read/edit/send/delete and client selection tests passed. Wider auth/client workflows remain. Team roles are outside the current individual-user model. |
-| API security (PR-07) | Missing: explicit CSRF defense, template escaping, URL restrictions, request/resource limits, and startup configuration checks. |
+| API security (PR-07) | Missing: explicit CSRF defense, template escaping, URL restrictions, request/resource limits, and wider startup configuration checks. Authentication configuration is validated. |
 | Privacy and retention (PR-08) | Planned: account export/deletion, retention rules, and redacted operational logs. |
 | Data correctness (PR-09) | Payment, numbering, rounding, deletion, and forward migration tests passed natively. Existing-data reconciliation, offline payment history, and identity snapshots remain. |
 | Integrations/jobs (PR-10) | Missing: durable email work, truthful delivery state, provider timeouts, and payment reconciliation. |
-| Tests (PR-11) | Financial, invoice isolation, and migration regressions passed. Auth, PDFs, provider sandboxes, and assembled frontend/API journeys remain. |
+| Tests (PR-11) | Financial, invoice isolation, session, and migration regressions passed. OAuth, PDFs, provider sandboxes, and assembled frontend/API journeys remain. |
 | UX/contracts (PR-12) | Frontend edit/delete affordances and client-deletion copy need updates for the new 409 responses. Browser flows, session expiry, and accessible recovery remain unverified. |
 | Performance/resilience (PR-13/14) | Missing: pagination and PDF concurrency limits. Workload targets, shutdown, and recovery tests remain undefined. |
 | Builds/infrastructure (PR-15/16) | CI exists; hosted execution, scans, runtime pinning, environment isolation, and deployed secrets/config remain unverified. |

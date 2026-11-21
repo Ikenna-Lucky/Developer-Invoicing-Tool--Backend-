@@ -45,9 +45,9 @@ jobs:
         run: bun install --frozen-lockfile
       - name: Check types
         run: bun run typecheck
-      - name: Check payment validation and webhook responses
+      - name: Check token validation and webhook responses
         run: bun run test
-      - name: Check payment transactions against PostgreSQL
+      - name: Check sessions, financial records, and migrations against PostgreSQL
         env:
           TEST_DATABASE_URL: postgresql://ci:ci@localhost:5432/billd_test
         run: bun run test:integration

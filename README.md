@@ -115,6 +115,31 @@ All routes except `/health` and `/auth/*` require an authenticated session (acce
 
 ## Deployment notes
 
+Session migration `0005_session_integrity` adds server-side session identifiers,
+an account session version, and one outstanding password-reset token per account.
+Deploy the migration and backend together: existing JWTs lack the new claims and
+users will need to sign in again. Existing password-reset links remain usable
+except older links where several were outstanding for one account.
+
+Access and refresh secrets must be distinct and at least 32 UTF-8 bytes each.
+Token lifetimes accept positive integer `s`, `m`, `h`, or `d` values up to 365 days.
+Startup rejects invalid authentication configuration. Refresh rotation keeps the
+original session deadline (7 days by default, 30 days with Remember me), rather
+than extending it on every refresh. Cookie and JWT expiry use the same deadlines.
+
+Protected requests check the active session in PostgreSQL. Successful logout
+revokes that browser session, including rotated tokens; password reset invalidates
+all sessions for that account. Requests already authorized before revocation may
+finish. Database failures are server errors, not invalid-login responses. Logout
+returns 503 without clearing retry credentials if revocation fails.
+
+Concurrent refresh requests accept one winner and reject reused tokens with 401
+without clearing cookies. The frontend should coordinate refresh requests and
+handle logout failure before clearing local state. Automatic token-family
+revocation on replay is not implemented. New passwords are limited to 72 UTF-8
+bytes to avoid bcrypt truncation. Rate limits, CSRF protection, verification email,
+and durable reset-email delivery remain separate work.
+
 GitHub Actions runs `.github/workflows/ci.yml` on pushes to `main` and
 `dev-branch`, on pull requests, and when started manually. It installs the locked
 dependencies, checks TypeScript, runs financial and migration tests against PostgreSQL 16,
@@ -126,10 +151,11 @@ Paystack events. They use dummy credentials and do not connect to a database or
 call payment and email services. Payment integration tests separately cover
 transactions, duplicate events, amount/currency mismatches, rollback, and signed
 webhook requests. Invoice tests cover numbering, exact totals, lifecycle rules,
-ownership boundaries, and concurrent requests. PDF rendering and authentication
+ownership boundaries, and concurrent requests. Session tests cover refresh, logout,
+password reset, concurrency, and migration. PDF rendering, OAuth, and browser
 workflows still need integration tests.
 
-Run `bun run test` for webhook boundary checks. For integration tests, set
+Run `bun run test` for webhook and authentication validation checks. For integration tests, set
 `TEST_DATABASE_URL` to a disposable local database named `billd_test`, then run
 `bun run test:integration`. The test user needs permission to create databases.
 Each suite creates and removes its own database and uses the real Drizzle

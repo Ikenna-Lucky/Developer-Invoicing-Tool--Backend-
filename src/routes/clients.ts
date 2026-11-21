@@ -6,7 +6,7 @@ import { eq, and, desc, ilike, or } from "drizzle-orm";
 import { db as defaultDb, type DB } from "../db";
 import { deleteClientWithoutInvoices } from "../lib/invoices";
 import { clients } from "../db/schema";
-import { authMiddleware } from "../middleware/auth";
+import { createAuthMiddleware } from "../middleware/auth";
 import type { Variables } from "../types";
 
 // Keep every client query scoped to the signed-in user.
@@ -15,7 +15,7 @@ export function createClientsRouter(database: DB = defaultDb) {
   const db = database;
   const clientsRouter = new Hono<{ Variables: Variables }>();
 
-  clientsRouter.use("*", authMiddleware);
+  clientsRouter.use("*", createAuthMiddleware(database));
 
   const createClientSchema = z.object({
     name: z.string().min(2, "Name must be at least 2 characters"),

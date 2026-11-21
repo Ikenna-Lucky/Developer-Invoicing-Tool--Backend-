@@ -3,6 +3,7 @@ import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { prettyJSON } from "hono/pretty-json";
 import { HTTPException } from "hono/http-exception";
+import { validateAuthConfiguration } from "./lib/jwt";
 
 import health from "./routes/health";
 import auth from "./routes/auth";
@@ -10,6 +11,7 @@ import clients from "./routes/clients";
 import invoices from "./routes/invoices";
 import webhooks from "./routes/webhooks";
 
+validateAuthConfiguration();
 const app = new Hono();
 
 app.use(

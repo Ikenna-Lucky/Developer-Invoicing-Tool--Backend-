@@ -9,6 +9,8 @@ import {
   unique,
   check,
   index,
+  integer,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { relations, sql } from "drizzle-orm";
 
@@ -26,6 +28,7 @@ export const users = pgTable("users", {
   passwordHash: text("password_hash"),
   fullName: text("full_name").notNull(),
   googleId: text("google_id").unique(),
+  sessionVersion: integer("session_version").notNull().default(0),
   businessName: text("business_name"),
   logoUrl: text("logo_url"),
   address: text("address"),
@@ -35,22 +38,33 @@ export const users = pgTable("users", {
 });
 
 // Refresh tokens — stored so individual sessions can be revoked (logout, password change, etc.)
-export const refreshTokens = pgTable("refresh_tokens", {
-  id: text("id").primaryKey(),
-  userId: text("user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
-  tokenHash: text("token_hash").notNull().unique(),
-  expiresAt: timestamp("expires_at").notNull(),
-  revoked: boolean("revoked").default(false).notNull(),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+export const refreshTokens = pgTable(
+  "refresh_tokens",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull().unique(),
+    sessionId: text("session_id").notNull(),
+    expiresAt: timestamp("expires_at").notNull(),
+    revoked: boolean("revoked").default(false).notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    activeSession: uniqueIndex("refresh_tokens_active_session_unique")
+      .on(table.sessionId)
+      .where(sql`${table.revoked} = false`),
+    userIndex: index("refresh_tokens_user_id_idx").on(table.userId),
+  }),
+);
 
 // Password reset tokens — one-time use, we only store the hash
 export const passwordResetTokens = pgTable("password_reset_tokens", {
   id: text("id").primaryKey(),
   userId: text("user_id")
     .notNull()
+    .unique()
     .references(() => users.id, { onDelete: "cascade" }),
   tokenHash: text("token_hash").notNull().unique(),
   expiresAt: timestamp("expires_at").notNull(),

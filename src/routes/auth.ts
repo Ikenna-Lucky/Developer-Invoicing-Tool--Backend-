@@ -1,629 +1,418 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
-import bcrypt from "bcryptjs";
 import { eq } from "drizzle-orm";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 
-import { db } from "../db";
-import { users, refreshTokens, passwordResetTokens } from "../db/schema";
+import { db as defaultDb, type DB } from "../db";
+import { users } from "../db/schema";
 import { sendMail } from "../lib/email";
 import {
-  signAccessToken,
-  signRefreshToken,
-  verifyRefreshToken,
-  hashToken,
-  tokenExpiryDate,
-} from "../lib/jwt";
-import { authMiddleware } from "../middleware/auth";
+  createSession,
+  registerWithPassword,
+  loginWithPassword,
+  rotateSession,
+  revokeSession,
+  requestPasswordReset,
+  resetPassword,
+  passwordSchema,
+  type AuthSession,
+} from "../lib/sessions";
+import { createAuthMiddleware } from "../middleware/auth";
 import type { Variables } from "../types";
 
-const auth = new Hono<{ Variables: Variables }>();
-
-const REFRESH_COOKIE = "refresh_token";
-const ACCESS_COOKIE = "access_token";
-const IS_PROD = process.env.NODE_ENV === "production";
-
-
-function generateId(): string {
-  return crypto.randomUUID();
-}
-
-function setAuthCookies(c: any, accessToken: string, refreshToken: string) {
+export function createAuthRouter(database: DB = defaultDb) {
+  const db = database;
+  const auth = new Hono<{ Variables: Variables }>();
+  const authMiddleware = createAuthMiddleware(database);
+  const REFRESH_COOKIE = "refresh_token";
+  const ACCESS_COOKIE = "access_token";
+  const IS_PROD = process.env.NODE_ENV === "production";
   const cookieOptions = {
     httpOnly: true,
     secure: IS_PROD,
-    // Production uses cross-site cookies; local development uses SameSite=Lax.
     sameSite: (IS_PROD ? "None" : "Lax") as "None" | "Lax",
     path: "/",
   };
 
-  setCookie(c, ACCESS_COOKIE, accessToken, {
-    ...cookieOptions,
-    maxAge: 60 * 15,
-  }); // 15 min
-  setCookie(c, REFRESH_COOKIE, refreshToken, {
-    ...cookieOptions,
-    maxAge: 60 * 60 * 24 * 7,
-  }); // 7 days
-}
-
-function clearAuthCookies(c: any) {
-  deleteCookie(c, ACCESS_COOKIE, { path: "/" });
-  deleteCookie(c, REFRESH_COOKIE, { path: "/" });
-}
-
-// POST /auth/register
-auth.post(
-  "/register",
-  zValidator(
-    "json",
-    z.object({
-      fullName: z.string().min(2, "Full name must be at least 2 characters"),
-      email: z.string().email("Invalid email address"),
-      password: z.string().min(8, "Password must be at least 8 characters"),
-    }),
-  ),
-  async (c) => {
-    const { fullName, email, password } = c.req.valid("json");
-
-    const existing = await db.query.users.findFirst({
-      where: eq(users.email, email.toLowerCase()),
+  function generateId(): string {
+    return crypto.randomUUID();
+  }
+  function setAuthCookies(c: Context, session: AuthSession) {
+    const maxAge = (expiresAt: Date) =>
+      Math.max(0, Math.ceil((expiresAt.getTime() - Date.now()) / 1000));
+    setCookie(c, ACCESS_COOKIE, session.accessToken, {
+      ...cookieOptions,
+      expires: session.accessExpiresAt,
+      maxAge: maxAge(session.accessExpiresAt),
     });
+    setCookie(c, REFRESH_COOKIE, session.refreshToken, {
+      ...cookieOptions,
+      expires: session.refreshExpiresAt,
+      maxAge: maxAge(session.refreshExpiresAt),
+    });
+  }
+  function clearAuthCookies(c: Context) {
+    deleteCookie(c, ACCESS_COOKIE, cookieOptions);
+    deleteCookie(c, REFRESH_COOKIE, cookieOptions);
+  }
 
-    if (existing) {
-      return c.json(
-        { error: "An account with this email already exists" },
-        409,
+  // POST /auth/register
+  auth.post(
+    "/register",
+    zValidator(
+      "json",
+      z.object({
+        fullName: z.string().min(2, "Full name must be at least 2 characters"),
+        email: z.string().email("Invalid email address"),
+        password: passwordSchema,
+      }),
+    ),
+    async (c) => {
+      const { user, session } = await registerWithPassword(
+        db,
+        c.req.valid("json"),
       );
-    }
+      setAuthCookies(c, session);
 
-    const passwordHash = await bcrypt.hash(password, 10);
-    const userId = generateId();
+      return c.json(
+        {
+          message: "Account created successfully",
+          user: {
+            id: user.id,
+            email: user.email,
+            fullName: user.fullName,
+            businessName: user.businessName,
+          },
+        },
+        201,
+      );
+    },
+  );
 
-    const [user] = await db
-      .insert(users)
-      .values({
-        id: userId,
-        email: email.toLowerCase(),
-        passwordHash,
-        fullName,
-      })
-      .returning();
+  // POST /auth/login
+  auth.post(
+    "/login",
+    zValidator(
+      "json",
+      z.object({
+        email: z.string().email(),
+        password: z.string().min(1, "Password is required"),
+        rememberMe: z.boolean().optional().default(false),
+      }),
+    ),
+    async (c) => {
+      const { user, session } = await loginWithPassword(
+        db,
+        c.req.valid("json"),
+      );
+      setAuthCookies(c, session);
 
-    const accessToken = await signAccessToken({
-      sub: user.id,
-      email: user.email,
-    });
-    const refreshToken = await signRefreshToken({
-      sub: user.id,
-      email: user.email,
-    });
-
-    await db.insert(refreshTokens).values({
-      id: generateId(),
-      userId: user.id,
-      tokenHash: hashToken(refreshToken),
-      expiresAt: tokenExpiryDate(process.env.JWT_REFRESH_EXPIRES_IN ?? "7d"),
-    });
-
-    setAuthCookies(c, accessToken, refreshToken);
-
-    return c.json(
-      {
-        message: "Account created successfully",
+      return c.json({
+        message: "Logged in successfully",
         user: {
           id: user.id,
           email: user.email,
           fullName: user.fullName,
           businessName: user.businessName,
+          logoUrl: user.logoUrl,
         },
-      },
-      201,
-    );
-  },
-);
+      });
+    },
+  );
 
-// POST /auth/login
-auth.post(
-  "/login",
-  zValidator(
-    "json",
-    z.object({
-      email: z.string().email(),
-      password: z.string().min(1, "Password is required"),
-      rememberMe: z.boolean().optional().default(false),
-    }),
-  ),
-  async (c) => {
-    const { email, password, rememberMe } = c.req.valid("json");
+  // POST /auth/refresh
+  auth.post("/refresh", async (c) => {
+    const token = getCookie(c, REFRESH_COOKIE);
+    if (!token) return c.json({ error: "No refresh token provided" }, 401);
+    // Failed refreshes must not erase cookies written by a concurrent successful refresh.
+    const session = await rotateSession(db, token);
+    setAuthCookies(c, session);
+    return c.json({ message: "Tokens refreshed" });
+  });
+
+  // POST /auth/logout
+  auth.post("/logout", async (c) => {
+    const token = getCookie(c, REFRESH_COOKIE);
+    try {
+      if (token) await revokeSession(db, token);
+    } catch (error) {
+      console.error("Session revocation failed:", error);
+      return c.json(
+        { error: "Could not revoke the session. Please try again." },
+        503,
+      );
+    }
+    clearAuthCookies(c);
+    return c.json({ message: "Logged out successfully" });
+  });
+
+  // GET /auth/me
+  auth.get("/me", authMiddleware, async (c) => {
+    const userId = c.get("userId");
 
     const user = await db.query.users.findFirst({
-      where: eq(users.email, email.toLowerCase()),
+      where: eq(users.id, userId),
     });
+    if (!user) return c.json({ error: "User not found" }, 404);
 
-    // If the account was created via Google, it has no password
-    if (user && !user.passwordHash) {
+    return c.json({
+      id: user.id,
+      email: user.email,
+      fullName: user.fullName,
+      businessName: user.businessName,
+      logoUrl: user.logoUrl,
+      address: user.address,
+      phone: user.phone,
+      createdAt: user.createdAt,
+    });
+  });
+
+  // PATCH /auth/me — update fullName, phone, address, businessName, logoUrl/avatar
+  auth.patch(
+    "/me",
+    authMiddleware,
+    zValidator(
+      "json",
+      z.object({
+        fullName: z.string().min(1).optional(),
+        phone: z.string().optional(),
+        businessName: z.string().optional(),
+        address: z.string().optional(),
+        logoUrl: z.string().optional(), // used as profile avatar (base64 or URL)
+      }),
+    ),
+    async (c) => {
+      const userId = c.get("userId");
+      const body = c.req.valid("json");
+
+      await db
+        .update(users)
+        .set({ ...body, updatedAt: new Date() })
+        .where(eq(users.id, userId));
+
+      const updated = await db.query.users.findFirst({
+        where: eq(users.id, userId),
+      });
+      if (!updated) return c.json({ error: "User not found" }, 404);
+
+      return c.json({
+        id: updated.id,
+        email: updated.email,
+        fullName: updated.fullName,
+        businessName: updated.businessName,
+        logoUrl: updated.logoUrl,
+        address: updated.address,
+        phone: updated.phone,
+        createdAt: updated.createdAt,
+      });
+    },
+  );
+
+  // GET /auth/google — kick off OAuth flow
+  auth.get("/google", (c) => {
+    const clientId = process.env.GOOGLE_CLIENT_ID;
+    if (!clientId) {
       return c.json(
-        {
-          error:
-            "This account uses Google Sign-In. Please click 'Continue with Google' to access it.",
-        },
-        401,
+        { error: "Google OAuth is not configured on this server" },
+        503,
       );
     }
 
-    if (!user || !(await bcrypt.compare(password, user.passwordHash!))) {
-      return c.json({ error: "Invalid email or password" }, 401);
-    }
+    const apiUrl = process.env.API_URL ?? "http://localhost:3001";
+    const redirectUri = `${apiUrl}/auth/google/callback`;
 
-    // "Remember me" extends the refresh token from 7 days to 30
-    const refreshTTL = rememberMe
-      ? "30d"
-      : (process.env.JWT_REFRESH_EXPIRES_IN ?? "7d");
-    const cookieMaxAge = rememberMe ? 60 * 60 * 24 * 30 : 60 * 60 * 24 * 7;
+    // random state, stashed in a short-lived cookie so we can verify it in the
+    // callback (CSRF protection)
+    const state = crypto.randomUUID();
 
-    const accessToken = await signAccessToken({
-      sub: user.id,
-      email: user.email,
-    });
-    const refreshToken = await signRefreshToken(
-      { sub: user.id, email: user.email },
-      refreshTTL,
-    );
-
-    await db.insert(refreshTokens).values({
-      id: generateId(),
-      userId: user.id,
-      tokenHash: hashToken(refreshToken),
-      expiresAt: tokenExpiryDate(refreshTTL),
-    });
-
-    // Override cookie max-age for remember-me sessions
-    const cookieOptions = {
+    setCookie(c, "oauth_state", state, {
       httpOnly: true,
       secure: IS_PROD,
-      sameSite: (IS_PROD ? "None" : "Lax") as "None" | "Lax",
+      sameSite: "Lax",
       path: "/",
-    };
-    setCookie(c, ACCESS_COOKIE, accessToken, {
-      ...cookieOptions,
-      maxAge: 60 * 15,
-    });
-    setCookie(c, REFRESH_COOKIE, refreshToken, {
-      ...cookieOptions,
-      maxAge: cookieMaxAge,
+      maxAge: 60 * 10, // Allow 10 minutes to complete sign-in.
     });
 
-    return c.json({
-      message: "Logged in successfully",
-      user: {
-        id: user.id,
-        email: user.email,
-        fullName: user.fullName,
-        businessName: user.businessName,
-        logoUrl: user.logoUrl,
-      },
+    const params = new URLSearchParams({
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      response_type: "code",
+      scope: "openid email profile",
+      state,
+      access_type: "online",
+      prompt: "select_account", // always show the account picker
     });
-  },
-);
 
-// POST /auth/refresh
-auth.post("/refresh", async (c) => {
-  const token = getCookie(c, REFRESH_COOKIE);
-
-  if (!token) {
-    return c.json({ error: "No refresh token provided" }, 401);
-  }
-
-  // Verify JWT signature + expiry
-  let payload;
-  try {
-    payload = await verifyRefreshToken(token);
-  } catch {
-    clearAuthCookies(c);
-    return c.json({ error: "Invalid or expired refresh token" }, 401);
-  }
-
-  // Check DB — token must exist and not be revoked
-  const storedToken = await db.query.refreshTokens.findFirst({
-    where: eq(refreshTokens.tokenHash, hashToken(token)),
-  });
-
-  if (
-    !storedToken ||
-    storedToken.revoked ||
-    storedToken.expiresAt < new Date()
-  ) {
-    clearAuthCookies(c);
-    return c.json({ error: "Refresh token has been revoked or expired" }, 401);
-  }
-
-  // Rotate: revoke old token, issue new pair
-  await db
-    .update(refreshTokens)
-    .set({ revoked: true })
-    .where(eq(refreshTokens.id, storedToken.id));
-
-  const newAccessToken = await signAccessToken({
-    sub: payload.sub,
-    email: payload.email,
-  });
-  const newRefreshToken = await signRefreshToken({
-    sub: payload.sub,
-    email: payload.email,
-  });
-
-  await db.insert(refreshTokens).values({
-    id: generateId(),
-    userId: payload.sub,
-    tokenHash: hashToken(newRefreshToken),
-    expiresAt: tokenExpiryDate(process.env.JWT_REFRESH_EXPIRES_IN ?? "7d"),
-  });
-
-  setAuthCookies(c, newAccessToken, newRefreshToken);
-
-  return c.json({ message: "Tokens refreshed" });
-});
-
-// POST /auth/logout
-auth.post("/logout", async (c) => {
-  const token = getCookie(c, REFRESH_COOKIE);
-
-  // Clear the browser cookies even if database revocation fails.
-  clearAuthCookies(c);
-
-  // Attempt revocation without delaying the logout response.
-  if (token) {
-    db.update(refreshTokens)
-      .set({ revoked: true })
-      .where(eq(refreshTokens.tokenHash, hashToken(token)))
-      .catch(() => {
-        /* Revocation failures leave the token valid until expiry. */
-      });
-  }
-
-  return c.json({ message: "Logged out successfully" });
-});
-
-// GET /auth/me
-auth.get("/me", authMiddleware, async (c) => {
-  const userId = c.get("userId");
-
-  const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
-  if (!user) return c.json({ error: "User not found" }, 404);
-
-  return c.json({
-    id: user.id,
-    email: user.email,
-    fullName: user.fullName,
-    businessName: user.businessName,
-    logoUrl: user.logoUrl,
-    address: user.address,
-    phone: user.phone,
-    createdAt: user.createdAt,
-  });
-});
-
-// PATCH /auth/me — update fullName, phone, address, businessName, logoUrl/avatar
-auth.patch(
-  "/me",
-  authMiddleware,
-  zValidator(
-    "json",
-    z.object({
-      fullName: z.string().min(1).optional(),
-      phone: z.string().optional(),
-      businessName: z.string().optional(),
-      address: z.string().optional(),
-      logoUrl: z.string().optional(), // used as profile avatar (base64 or URL)
-    }),
-  ),
-  async (c) => {
-    const userId = c.get("userId");
-    const body = c.req.valid("json");
-
-    await db
-      .update(users)
-      .set({ ...body, updatedAt: new Date() })
-      .where(eq(users.id, userId));
-
-    const updated = await db.query.users.findFirst({
-      where: eq(users.id, userId),
-    });
-    if (!updated) return c.json({ error: "User not found" }, 404);
-
-    return c.json({
-      id: updated.id,
-      email: updated.email,
-      fullName: updated.fullName,
-      businessName: updated.businessName,
-      logoUrl: updated.logoUrl,
-      address: updated.address,
-      phone: updated.phone,
-      createdAt: updated.createdAt,
-    });
-  },
-);
-
-// GET /auth/google — kick off OAuth flow
-auth.get("/google", (c) => {
-  const clientId = process.env.GOOGLE_CLIENT_ID;
-  if (!clientId) {
-    return c.json(
-      { error: "Google OAuth is not configured on this server" },
-      503,
+    return c.redirect(
+      `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`,
     );
-  }
-
-  const apiUrl = process.env.API_URL ?? "http://localhost:3001";
-  const redirectUri = `${apiUrl}/auth/google/callback`;
-
-  // random state, stashed in a short-lived cookie so we can verify it in the
-  // callback (CSRF protection)
-  const state = crypto.randomUUID();
-
-  setCookie(c, "oauth_state", state, {
-    httpOnly: true,
-    secure: IS_PROD,
-    sameSite: "Lax",
-    path: "/",
-    maxAge: 60 * 10, // Allow 10 minutes to complete sign-in.
   });
 
-  const params = new URLSearchParams({
-    client_id: clientId,
-    redirect_uri: redirectUri,
-    response_type: "code",
-    scope: "openid email profile",
-    state,
-    access_type: "online",
-    prompt: "select_account", // always show the account picker
-  });
+  // GET /auth/google/callback — handle Google's redirect back
+  auth.get("/google/callback", async (c) => {
+    const { code, state, error } = c.req.query();
 
-  return c.redirect(
-    `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`,
-  );
-});
+    const storedState = getCookie(c, "oauth_state");
+    deleteCookie(c, "oauth_state", { path: "/" });
 
-// GET /auth/google/callback — handle Google's redirect back
-auth.get("/google/callback", async (c) => {
-  const { code, state, error } = c.req.query();
-
-  const storedState = getCookie(c, "oauth_state");
-  deleteCookie(c, "oauth_state", { path: "/" });
-
-  const frontendUrl = process.env.FRONTEND_URL ?? "http://localhost:3000";
-  const apiUrl = process.env.API_URL ?? "http://localhost:3001";
-  const redirectUri = `${apiUrl}/auth/google/callback`;
-
-  // validation
-
-  if (error === "access_denied") {
-    return c.redirect(`${frontendUrl}/sign-in?error=google_denied`);
-  }
-
-  if (!code) {
-    return c.redirect(`${frontendUrl}/sign-in?error=google_no_code`);
-  }
-
-  if (!state || !storedState || state !== storedState) {
-    return c.redirect(`${frontendUrl}/sign-in?error=google_state_mismatch`);
-  }
-
-  try {
-    // exchange the authorization code for an access token
-
-    const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        code,
-        client_id: process.env.GOOGLE_CLIENT_ID!,
-        client_secret: process.env.GOOGLE_CLIENT_SECRET!,
-        redirect_uri: redirectUri,
-        grant_type: "authorization_code",
-      }),
-    });
-
-    if (!tokenRes.ok) {
-      console.error("Google token exchange failed:", await tokenRes.text());
-      return c.redirect(`${frontendUrl}/sign-in?error=google_token_failed`);
-    }
-
-    const { access_token } = (await tokenRes.json()) as {
-      access_token: string;
-    };
-
-    // fetch the user's Google profile
-
-    const profileRes = await fetch(
-      "https://www.googleapis.com/oauth2/v2/userinfo",
-      {
-        headers: { Authorization: `Bearer ${access_token}` },
-      },
-    );
-
-    if (!profileRes.ok) {
-      return c.redirect(`${frontendUrl}/sign-in?error=google_profile_failed`);
-    }
-
-    const googleUser = (await profileRes.json()) as {
-      id: string;
-      email: string;
-      name: string;
-      picture?: string;
-      verified_email: boolean;
-    };
-
-    if (!googleUser.verified_email) {
-      return c.redirect(`${frontendUrl}/sign-in?error=google_unverified_email`);
-    }
-
-    // find or create the account
-
-    let user = await db.query.users.findFirst({
-      // Link an existing account using Google's verified email address.
-      where: eq(users.email, googleUser.email.toLowerCase()),
-    });
-
-    if (user) {
-      // link the Google ID to the existing account if not already linked
-      if (!user.googleId) {
-        await db
-          .update(users)
-          .set({ googleId: googleUser.id, updatedAt: new Date() })
-          .where(eq(users.id, user.id));
-        user = { ...user, googleId: googleUser.id };
-      }
-    } else {
-      // first time — create a new account from the Google profile
-      const [newUser] = await db
-        .insert(users)
-        .values({
-          id: generateId(),
-          email: googleUser.email.toLowerCase(),
-          fullName: googleUser.name,
-          googleId: googleUser.id,
-          logoUrl: googleUser.picture ?? null,
-          passwordHash: null, // Google-only account — no password
-        })
-        .returning();
-      user = newUser;
-    }
-
-    // issue session tokens
-
-    const accessToken = await signAccessToken({
-      sub: user.id,
-      email: user.email,
-    });
-    const refreshToken = await signRefreshToken({
-      sub: user.id,
-      email: user.email,
-    });
-
-    await db.insert(refreshTokens).values({
-      id: generateId(),
-      userId: user.id,
-      tokenHash: hashToken(refreshToken),
-      expiresAt: tokenExpiryDate(process.env.JWT_REFRESH_EXPIRES_IN ?? "7d"),
-    });
-
-    setAuthCookies(c, accessToken, refreshToken);
-
-    return c.redirect(`${frontendUrl}/dashboard`);
-  } catch (err) {
-    console.error("Google OAuth callback error:", err);
-    return c.redirect(`${frontendUrl}/sign-in?error=google_auth_failed`);
-  }
-});
-
-// POST /auth/forgot-password — issues a one-time reset token and emails a link.
-// Always returns 200 whether or not the email exists, so we don't leak that info.
-auth.post(
-  "/forgot-password",
-  zValidator("json", z.object({ email: z.string().email() })),
-  async (c) => {
-    const { email } = c.req.valid("json");
     const frontendUrl = process.env.FRONTEND_URL ?? "http://localhost:3000";
+    const apiUrl = process.env.API_URL ?? "http://localhost:3001";
+    const redirectUri = `${apiUrl}/auth/google/callback`;
 
-    const user = await db.query.users.findFirst({
-      where: eq(users.email, email.toLowerCase()),
-    });
+    // validation
 
-    // silent success — don't reveal whether the email exists
-    if (!user || !user.passwordHash) {
+    if (error === "access_denied") {
+      return c.redirect(`${frontendUrl}/sign-in?error=google_denied`);
+    }
+
+    if (!code) {
+      return c.redirect(`${frontendUrl}/sign-in?error=google_no_code`);
+    }
+
+    if (!state || !storedState || state !== storedState) {
+      return c.redirect(`${frontendUrl}/sign-in?error=google_state_mismatch`);
+    }
+
+    try {
+      // exchange the authorization code for an access token
+
+      const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          code,
+          client_id: process.env.GOOGLE_CLIENT_ID!,
+          client_secret: process.env.GOOGLE_CLIENT_SECRET!,
+          redirect_uri: redirectUri,
+          grant_type: "authorization_code",
+        }),
+      });
+
+      if (!tokenRes.ok) {
+        console.error("Google token exchange failed:", await tokenRes.text());
+        return c.redirect(`${frontendUrl}/sign-in?error=google_token_failed`);
+      }
+
+      const { access_token } = (await tokenRes.json()) as {
+        access_token: string;
+      };
+
+      // fetch the user's Google profile
+
+      const profileRes = await fetch(
+        "https://www.googleapis.com/oauth2/v2/userinfo",
+        {
+          headers: { Authorization: `Bearer ${access_token}` },
+        },
+      );
+
+      if (!profileRes.ok) {
+        return c.redirect(`${frontendUrl}/sign-in?error=google_profile_failed`);
+      }
+
+      const googleUser = (await profileRes.json()) as {
+        id: string;
+        email: string;
+        name: string;
+        picture?: string;
+        verified_email: boolean;
+      };
+
+      if (!googleUser.verified_email) {
+        return c.redirect(
+          `${frontendUrl}/sign-in?error=google_unverified_email`,
+        );
+      }
+
+      // find or create the account
+
+      let user = await db.query.users.findFirst({
+        // Link an existing account using Google's verified email address.
+        where: eq(users.email, googleUser.email.toLowerCase()),
+      });
+
+      if (user) {
+        // link the Google ID to the existing account if not already linked
+        if (!user.googleId) {
+          await db
+            .update(users)
+            .set({ googleId: googleUser.id, updatedAt: new Date() })
+            .where(eq(users.id, user.id));
+          user = { ...user, googleId: googleUser.id };
+        }
+      } else {
+        // first time — create a new account from the Google profile
+        const [newUser] = await db
+          .insert(users)
+          .values({
+            id: generateId(),
+            email: googleUser.email.toLowerCase(),
+            fullName: googleUser.name,
+            googleId: googleUser.id,
+            logoUrl: googleUser.picture ?? null,
+            passwordHash: null, // Google-only account — no password
+          })
+          .returning();
+        user = newUser;
+      }
+
+      const session = await createSession(db, user.id);
+      setAuthCookies(c, session);
+
+      return c.redirect(`${frontendUrl}/dashboard`);
+    } catch (err) {
+      console.error("Google OAuth callback error:", err);
+      return c.redirect(`${frontendUrl}/sign-in?error=google_auth_failed`);
+    }
+  });
+
+  // POST /auth/forgot-password — issues a one-time reset token and emails a link.
+  // Always returns 200 whether or not the email exists, so we don't leak that info.
+  auth.post(
+    "/forgot-password",
+    zValidator("json", z.object({ email: z.string().email() })),
+    async (c) => {
+      const { email } = c.req.valid("json");
+      const reset = await requestPasswordReset(db, email);
+      if (reset) {
+        const frontendUrl = process.env.FRONTEND_URL ?? "http://localhost:3000";
+        const resetUrl = `${frontendUrl}/reset-password?token=${reset.rawToken}`;
+        await sendMail({
+          to: reset.user.email,
+          subject: "Reset your Billd password",
+          html: buildResetEmail({ fullName: reset.user.fullName, resetUrl }),
+        });
+      }
       return c.json({
         message: "If that email exists, a reset link has been sent.",
       });
-    }
+    },
+  );
 
-    // one active reset token per user at a time
-    await db
-      .delete(passwordResetTokens)
-      .where(eq(passwordResetTokens.userId, user.id));
+  // POST /auth/reset-password — validates the token and sets the new password
+  auth.post(
+    "/reset-password",
+    zValidator(
+      "json",
+      z.object({
+        token: z.string().regex(/^[a-fA-F0-9]{64}$/, "Invalid reset token"),
+        password: passwordSchema,
+      }),
+    ),
+    async (c) => {
+      const { token, password } = c.req.valid("json");
+      await resetPassword(db, token, password);
+      clearAuthCookies(c);
 
-    const rawToken =
-      crypto.randomUUID().replace(/-/g, "") +
-      crypto.randomUUID().replace(/-/g, "");
-    const tokenHash = hashToken(rawToken);
-    const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+      return c.json({
+        message: "Password updated successfully. You can now sign in.",
+      });
+    },
+  );
 
-    await db.insert(passwordResetTokens).values({
-      id: generateId(),
-      userId: user.id,
-      tokenHash,
-      expiresAt,
-    });
-
-    const resetUrl = `${frontendUrl}/reset-password?token=${rawToken}`;
-
-    await sendMail({
-      to: user.email,
-      subject: "Reset your Billd password",
-      html: buildResetEmail({ fullName: user.fullName, resetUrl }),
-    });
-
-    return c.json({
-      message: "If that email exists, a reset link has been sent.",
-    });
-  },
-);
-
-// POST /auth/reset-password — validates the token and sets the new password
-auth.post(
-  "/reset-password",
-  zValidator(
-    "json",
-    z.object({
-      token: z.string().min(1),
-      password: z.string().min(8, "Password must be at least 8 characters"),
-    }),
-  ),
-  async (c) => {
-    const { token, password } = c.req.valid("json");
-
-    const tokenHash = hashToken(token);
-
-    const record = await db.query.passwordResetTokens.findFirst({
-      where: eq(passwordResetTokens.tokenHash, tokenHash),
-    });
-
-    if (!record) {
-      return c.json({ error: "Invalid or expired reset link." }, 400);
-    }
-
-    if (new Date() > record.expiresAt) {
-      await db
-        .delete(passwordResetTokens)
-        .where(eq(passwordResetTokens.id, record.id));
-      return c.json(
-        { error: "This reset link has expired. Please request a new one." },
-        400,
-      );
-    }
-
-    const passwordHash = await bcrypt.hash(password, 10);
-    await db
-      .update(users)
-      .set({ passwordHash, updatedAt: new Date() })
-      .where(eq(users.id, record.userId));
-
-    await db
-      .delete(passwordResetTokens)
-      .where(eq(passwordResetTokens.id, record.id));
-
-    // Remove refresh tokens; issued access tokens remain valid until expiry.
-    await db
-      .delete(refreshTokens)
-      .where(eq(refreshTokens.userId, record.userId));
-
-    return c.json({
-      message: "Password updated successfully. You can now sign in.",
-    });
-  },
-);
+  return auth;
+}
 
 function buildResetEmail({
   fullName,
@@ -683,4 +472,4 @@ function buildResetEmail({
 </html>`;
 }
 
-export default auth;
+export default createAuthRouter();
