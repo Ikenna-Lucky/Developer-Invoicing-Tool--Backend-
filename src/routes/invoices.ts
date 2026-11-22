@@ -25,7 +25,15 @@ import {
   clients,
   users,
   emailJobs,
+  payments,
 } from "../db/schema";
+import {
+  offlinePaymentSchema,
+  recordOfflinePayment,
+  recordPaystackPayment,
+  PaymentConflict,
+} from "../lib/payments";
+import { verifyPaystackPayment } from "../lib/paystack";
 import { createAuthMiddleware } from "../middleware/auth";
 import { generateInvoicePDF, type PDFInput } from "../lib/pdf";
 import { escapeEmailHtml } from "../lib/email";
@@ -36,11 +44,105 @@ import type { Variables } from "../types";
 export function createInvoicesRouter(
   database: DB = defaultDb,
   renderPdf: (input: PDFInput) => Promise<Buffer> = generateInvoicePDF,
+  verifyPayment = verifyPaystackPayment,
 ) {
   const db = database;
   const invoicesRouter = new Hono<{ Variables: Variables }>();
 
   invoicesRouter.use("*", createAuthMiddleware(database, true));
+
+  const paymentView = (payment: typeof payments.$inferSelect) => {
+    const { idempotencyKey, ...publicPayment } = payment;
+    return publicPayment;
+  };
+  invoicesRouter.get(
+    "/:id/payments",
+    zValidator("param", z.object({ id: z.string().uuid() })),
+    async (c) => {
+      const invoiceId = c.req.valid("param").id;
+      const invoice = await db.query.invoices.findFirst({
+        where: and(
+          eq(invoices.id, invoiceId),
+          eq(invoices.userId, c.get("userId")),
+          isNull(invoices.deletedAt),
+        ),
+      });
+      if (!invoice) return c.json({ error: "Invoice not found" }, 404);
+      const rows = await db.query.payments.findMany({
+        where: eq(payments.invoiceId, invoiceId),
+        orderBy: [desc(payments.createdAt)],
+        limit: 100,
+      });
+      return c.json({ data: rows.map(paymentView) });
+    },
+  );
+  invoicesRouter.post(
+    "/:id/payments",
+    zValidator("param", z.object({ id: z.string().uuid() })),
+    zValidator("json", offlinePaymentSchema),
+    async (c) => {
+      const result = await recordOfflinePayment(
+        db,
+        c.get("userId"),
+        c.req.valid("param").id,
+        c.req.header("Idempotency-Key") ?? "",
+        c.req.valid("json"),
+      );
+      return c.json(
+        { data: paymentView(result.payment), duplicate: result.duplicate },
+        result.duplicate ? 200 : 201,
+      );
+    },
+  );
+  invoicesRouter.post(
+    "/:id/payments/reconcile",
+    zValidator("param", z.object({ id: z.string().uuid() })),
+    zValidator(
+      "json",
+      z
+        .object({ reference: z.string().regex(/^[A-Za-z0-9.=_-]{1,200}$/) })
+        .strict(),
+    ),
+    async (c) => {
+      const invoiceId = c.req.valid("param").id;
+      const userId = c.get("userId");
+      const invoice = await db.query.invoices.findFirst({
+        where: and(
+          eq(invoices.id, invoiceId),
+          eq(invoices.userId, userId),
+          isNull(invoices.deletedAt),
+        ),
+      });
+      if (!invoice) return c.json({ error: "Invoice not found" }, 404);
+      const quota = await consumeRateLimit(
+        db,
+        `payment-reconciliation:${userId}`,
+        10,
+        60,
+      );
+      if (!quota.allowed) {
+        c.header("Retry-After", String(quota.retryAfter));
+        return c.json({ error: "Too many payment verification requests" }, 429);
+      }
+      const charge = await verifyPayment(c.req.valid("json").reference);
+      const metadata = z
+        .object({ invoice_id: z.literal(invoiceId) })
+        .safeParse(charge.metadata);
+      if (!metadata.success)
+        return c.json(
+          { error: "Payment does not belong to this invoice" },
+          422,
+        );
+      try {
+        const result = await recordPaystackPayment(db, charge);
+        return c.json({ result });
+      } catch (error) {
+        if (error instanceof PaymentConflict)
+          return c.json({ error: error.message }, 409);
+        throw error;
+      }
+    },
+  );
 
   const lineItemSchema = z.object({
     description: z.string().min(1, "Description is required").max(500),

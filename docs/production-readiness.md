@@ -331,19 +331,50 @@ production workload, and live-provider completion remain unverified. Configure
 Render readiness and shutdown timing as documented, then rehearse a deployment.
 No production configuration, deployment, or database was changed.
 
+## Offline payment history and Paystack reconciliation — 22 November 2026
+
+PR-09/10/18/23: implemented with local verification. Offline receipts record the
+full NGN amount, payment date, method, reference, and authenticated owner. Account-
+scoped durable idempotency keys and invoice locks coordinate retries, distinct
+keys, and simultaneous webhooks. Receipt insertion, paid status, and the existing
+audit event commit together. Payments reject SQL updates/deletes/truncation.
+Owner-only reconciliation verifies a supplied Paystack reference, validates the
+invoice/amount/currency, and reuses webhook recording. Verification is bounded to
+eight seconds and ten checks per owner per minute. See [payments](payments.md).
+
+Bun 1.4.5 TypeScript and 46 unit/runtime tests passed, with the existing Windows
+POSIX-signal skip. The complete 112-test integration suite passed on an isolated
+local PostgreSQL 17 cluster using matching recovery tools. After adding final
+edge cases, all 20 focused payment/migration tests passed (104 assertions),
+including history preservation on upgrade, concurrency, rollback, SQL immutability,
+API authentication/ownership, invalid reconciliation, replay, and rate limiting.
+Schema generation reports no further changes. Paystack HTTP responses are stubbed;
+no live payments or customer messages were sent. PostgreSQL 16/Linux CI, Neon,
+Render, and live Paystack compatibility remain to be verified. Docker was
+unavailable, so PostgreSQL 17 is local evidence rather than an exact CI replica.
+
+The frontend must replace manual paid-status changes with the new receipt form
+and retain a retry key. The status endpoint now rejects new paid transitions with
+409, while repeating paid on an already-paid invoice remains a no-op. Migration
+0010 adds fields/key uniqueness and the append-only trigger without inventing
+receipts or actors for old data. Existing paid invoices without payment records
+need review. Automatic scheduled reconciliation, payment reversals/refunds,
+partial payments, settlement routing, and historical repair remain outstanding.
+No production migration or deployment was performed.
+
 ## Remaining controls
 
 | Area                              | Status and next work                                                                                                                                                                                                                                                                           |
 | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Product rules (PR-01)             | Invoice transitions and draft-only editing/deletion implemented. Settlement routing, offline payment audit, and release acceptance criteria remain.                                                                                                                                            |
+| Product rules (PR-01)             | Invoice transitions and draft-only editing/deletion implemented. Offline payment receipts and owner-triggered reconciliation are implemented/tested. Settlement routing and release acceptance criteria remain.                                                                                |
 | Maintainability (PR-02)           | Payment recording extracted into a focused operation; template extraction and naming cleanup remain.                                                                                                                                                                                           |
 | Threats (PR-03)                   | Planned: document abuse and failure cases across authentication, payments, PDFs, and external services.                                                                                                                                                                                        |
 | Identity and sessions (PR-04/05)  | Atomic reset/refresh, unique tokens, consistent deadlines, and server-side revocation implemented and tested. Shared IP/account rate limits are tested. Email verification and account gates are tested. Deployed proxy validation, replay escalation policy, and browser verification remain. |
 | Ownership (PR-06)                 | Cross-user invoice read/edit/send/delete and client selection tests passed. Wider auth/client workflows remain. Team roles are outside the current individual-user model.                                                                                                                      |
 | API security (PR-07)              | Exact origin CSRF checks and bounded authentication bodies implemented/tested. PDF escaping, network denial, logo validation, and render limits are tested. Wider request limits and configuration checks remain.                                                                              |
 | Privacy and retention (PR-08)     | Allowlisted operational logs and outgoing monitoring events implemented/tested. Account export/deletion and retention rules remain.                                                                                                                                                            |
-| Data correctness (PR-09)          | Payment, numbering, rounding, deletion, and forward migration tests passed natively. Existing-data reconciliation, offline payment history, and identity snapshots remain.                                                                                                                     |
-| Integrations/jobs (PR-10)         | Durable encrypted email jobs, provider acceptance state, retries, and timeouts are tested locally. Hosted workers, live provider delivery, backpressure, and payment reconciliation remain.                                                                                                    |
+| Data correctness (PR-09)          | Payment, numbering, rounding, deletion, and forward migration tests passed natively. Offline payment history and reference-based reconciliation are implemented/tested. Historical repair and identity snapshots remain.                                                                       |
+| Integrations/jobs (PR-10)         | Durable encrypted email jobs, provider acceptance state, retries, and timeouts are tested locally. Owner-triggered payment reconciliation is implemented/tested. Hosted workers, live delivery, backpressure, and scheduled reconciliation remain.                                             |
 | Tests (PR-11)                     | Financial, invoice isolation, session, and migration regressions passed. Real PDF security tests passed; live OAuth, provider sandboxes, and assembled frontend/API journeys remain.                                                                                                           |
 | UX/contracts (PR-12)              | Frontend pagination controls/selectors/totals must be updated before the paginated contract is deployed to affected users. Edit/delete affordances and client-deletion copy need updates for the 409 responses. Browser flows, session expiry, and accessible recovery remain unverified.      |
 | Performance/resilience (PR-13/14) | PDF concurrency/deadline/size limits implemented and tested; cursor pagination and list indexes implemented/tested. Shutdown and readiness have local test evidence; hosted draining, workload targets, and recovery targets remain unverified.                                                |

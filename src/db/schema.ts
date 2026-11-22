@@ -219,6 +219,10 @@ export const payments = pgTable("payments", {
   amountPaid: numeric("amount_paid", { precision: 10, scale: 2 }).notNull(),
   paidAt: timestamp("paid_at").notNull(),
   stripePaymentId: text("stripe_payment_id").unique(), // Stores the Paystack reference.
+  method: text("method").default("paystack").notNull(),
+  recordedBy: text("recorded_by"),
+  reference: text("reference"),
+  idempotencyKey: text("idempotency_key").unique(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

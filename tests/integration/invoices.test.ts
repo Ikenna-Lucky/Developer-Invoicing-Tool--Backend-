@@ -13,7 +13,10 @@ import {
   permanentlyDeleteDraftInvoice,
   deleteClientWithoutInvoices,
 } from "../../src/lib/invoices";
-import { recordPaystackPayment } from "../../src/lib/payments";
+import {
+  recordPaystackPayment,
+  recordOfflinePayment,
+} from "../../src/lib/payments";
 import { decryptEmail, processNextEmail } from "../../src/lib/email-queue";
 
 const context = createTestDatabase();
@@ -220,7 +223,12 @@ test("sent and paid invoice details cannot be edited, even through direct SQL", 
   await expect(
     client`delete from invoice_items where invoice_id = ${invoice.id}`,
   ).rejects.toThrow("cannot be changed");
-  await changeInvoiceStatus(database, userId, invoice.id, "paid");
+  await recordOfflinePayment(database, userId, invoice.id, randomUUID(), {
+    amount: invoice.totalAmount,
+    paidAt: "2026-01-02T00:00:00Z",
+    method: "cash",
+    reference: "cash receipt",
+  });
   await expect(
     updateDraftInvoice(database, userId, invoice.id, { notes: "Changed" }),
   ).rejects.toThrow("Only unpaid drafts");
@@ -319,7 +327,15 @@ test("status changes reject draft shortcuts and premature overdue marking", asyn
   await expect(
     changeInvoiceStatus(database, userId, invoice.id, "overdue"),
   ).rejects.toThrow("not overdue");
-  await changeInvoiceStatus(database, userId, invoice.id, "paid");
+  await expect(
+    changeInvoiceStatus(database, userId, invoice.id, "paid"),
+  ).rejects.toThrow("Record a payment");
+  await recordOfflinePayment(database, userId, invoice.id, randomUUID(), {
+    amount: invoice.totalAmount,
+    paidAt: "2026-01-02T00:00:00Z",
+    method: "cash",
+    reference: "cash receipt",
+  });
   expect(
     (await changeInvoiceStatus(database, userId, invoice.id, "paid")).status,
   ).toBe("paid");
@@ -463,11 +479,17 @@ test("concurrent sends accept one status change and cannot overwrite a paid invo
   expect(responses.map((response) => response.status).sort()).toEqual([
     202, 409,
   ]);
-  await changeInvoiceStatus(
+  await recordOfflinePayment(
     database,
     account.userId,
     account.invoice.id,
-    "paid",
+    randomUUID(),
+    {
+      amount: account.invoice.totalAmount,
+      paidAt: "2026-01-02T00:00:00Z",
+      method: "cash",
+      reference: "cash receipt",
+    },
   );
   expect(
     (

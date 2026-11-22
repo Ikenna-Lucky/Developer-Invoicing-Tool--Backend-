@@ -94,6 +94,10 @@ Paystack webhooks require a valid signature.
 - `GET /health/ready` — bounded database readiness (200 or 503)
 - `GET /health/db` — checks the database connection
 
+Payment recording and missed-webhook recovery are documented in
+[payments](docs/payments.md). Manual paid-status changes now require a payment
+record, including an idempotency key and receipt details.
+
 **Auth** (`/auth`)
 
 - `POST /register`, `POST /login`, `POST /refresh`, `POST /logout`

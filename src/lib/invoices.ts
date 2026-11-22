@@ -211,10 +211,12 @@ export async function changeInvoiceStatus(
   return database.transaction(async (tx) => {
     const invoice = await lockOwnedInvoice(tx, userId, invoiceId);
     if (invoice.status === status) return invoice;
-    const allowed =
-      (invoice.status === "sent" &&
-        (status === "paid" || status === "overdue")) ||
-      (invoice.status === "overdue" && status === "paid");
+    if (status === "paid")
+      throw new HTTPException(409, {
+        message:
+          "Record a payment instead of changing status; use Send for a draft",
+      });
+    const allowed = invoice.status === "sent" && status === "overdue";
     if (!allowed)
       throw new HTTPException(409, {
         message: "Invoice status cannot change this way; use Send for a draft",

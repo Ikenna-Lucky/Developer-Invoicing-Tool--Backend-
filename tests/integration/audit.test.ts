@@ -58,7 +58,7 @@ test("account, client, invoice, and manual status changes record only approved f
     .update(schema.invoices)
     .set({ status: "sent" })
     .where(eq(schema.invoices.id, invoice.id));
-  await changeInvoiceStatus(database, ownerId, invoice.id, "paid");
+  await changeInvoiceStatus(database, ownerId, invoice.id, "overdue");
   const events = await history(ownerId);
   expect(events.map((e) => e.action)).toEqual(
     expect.arrayContaining([
@@ -75,7 +75,7 @@ test("account, client, invoice, and manual status changes record only approved f
       .map((e) => e.details),
   ).toEqual([
     { from: "draft", to: "sent" },
-    { from: "sent", to: "paid" },
+    { from: "sent", to: "overdue" },
   ]);
   expect(JSON.stringify(events)).not.toContain("secret");
 });

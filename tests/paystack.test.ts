@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
 import type { DB } from "../src/db";
 import { paystackChargeSchema } from "../src/lib/payments";
+import { verifyPaystackPayment } from "../src/lib/paystack";
 
 const secret = "test-paystack-secret";
 let createRouter: typeof import("../src/routes/webhooks").createWebhooksRouter;
@@ -16,10 +17,55 @@ const charge = {
   reference: "BILLD-test-reference",
   amount: 125050,
   paid_at: "2026-11-21T10:00:00.000Z",
-  status: "success",
+  status: "success" as const,
   currency: "NGN",
   metadata: { invoice_id: "ba464539-627a-453e-8e65-7c4c697d1e04" },
 };
+
+test("verification uses the server secret and accepts only the requested successful reference", async () => {
+  const request = (async (url: string, options: RequestInit) => {
+    expect(url).toBe(
+      `https://api.paystack.co/transaction/verify/${charge.reference}`,
+    );
+    expect((options.headers as Record<string, string>).Authorization).toBe(
+      `Bearer ${secret}`,
+    );
+    expect(options.signal).toBeInstanceOf(AbortSignal);
+    return Response.json({ status: true, data: charge });
+  }) as typeof fetch;
+  expect(await verifyPaystackPayment(charge.reference, request)).toEqual(
+    charge,
+  );
+  for (const changes of [
+    { status: "pending" },
+    { reference: "another-reference" },
+    { amount: "125050" },
+  ]) {
+    const invalid = (async () =>
+      Response.json({
+        status: true,
+        data: { ...charge, ...changes },
+      })) as unknown as typeof fetch;
+    await expect(
+      verifyPaystackPayment(charge.reference, invalid),
+    ).rejects.toThrow("valid successful payment");
+  }
+});
+
+test("verification hides provider errors and malformed responses", async () => {
+  for (const response of [
+    new Response("private error", { status: 500 }),
+    Response.json({ status: false }),
+    new Response("not json"),
+  ]) {
+    await expect(
+      verifyPaystackPayment(
+        charge.reference,
+        (async () => response) as unknown as typeof fetch,
+      ),
+    ).rejects.toThrow("Could not verify payment");
+  }
+});
 
 function request(body: string, signature?: string) {
   return new Request("http://localhost/paystack", {

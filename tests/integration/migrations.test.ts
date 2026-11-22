@@ -34,10 +34,26 @@ beforeAll(async () => {
   await client`insert into clients (id, user_id, name, email) values (${clientId}, ${userId}, 'Legacy Client', 'client@example.test')`;
   await client`insert into invoices (id, user_id, client_id, invoice_number, status, issue_date, due_date, total_amount)
     values (${invoiceId}, ${userId}, ${clientId}, 'INV-0042', 'sent', '2026-01-01', '2026-01-31', 100)`;
+  const paidInvoiceId = randomUUID();
+  await client`insert into invoices (id, user_id, client_id, invoice_number, status, issue_date, due_date, total_amount)
+    values (${paidInvoiceId}, ${userId}, ${clientId}, 'HISTORICAL', 'paid', '2026-01-01', '2026-01-31', 100)`;
+  await client`insert into payments (id, invoice_id, amount_paid, paid_at, stripe_payment_id)
+    values ('historical-payment', ${paidInvoiceId}, 100, '2026-01-02', 'historical-paystack-reference')`;
   await migrate(database, { migrationsFolder: folder });
 }, 30_000);
 afterAll(async () => {
   await context.close();
+});
+
+test("payment history migration preserves existing receipts without inventing an actor or retry key", async () => {
+  const payment = await database.query.payments.findFirst({
+    where: eq(schema.payments.id, "historical-payment"),
+  });
+  expect(payment?.amountPaid).toBe("100.00");
+  expect(payment?.stripePaymentId).toBe("historical-paystack-reference");
+  expect(payment?.method).toBe("paystack");
+  expect(payment?.recordedBy).toBeNull();
+  expect(payment?.idempotencyKey).toBeNull();
 });
 
 test("forward migration repairs skipped auth and Trash fields without losing invoices", async () => {
@@ -47,14 +63,12 @@ test("forward migration repairs skipped auth and Trash fields without losing inv
   expect(invoice?.invoiceNumber).toBe("INV-0042");
   expect(invoice?.status).toBe("sent");
   expect(invoice?.deletedAt).toBe(null);
-  await database
-    .insert(schema.users)
-    .values({
-      id: randomUUID(),
-      email: "google@example.test",
-      fullName: "Google User",
-      googleId: "test-google-id",
-    });
+  await database.insert(schema.users).values({
+    id: randomUUID(),
+    email: "google@example.test",
+    fullName: "Google User",
+    googleId: "test-google-id",
+  });
   expect(await database.query.passwordResetTokens.findMany()).toHaveLength(0);
 });
 

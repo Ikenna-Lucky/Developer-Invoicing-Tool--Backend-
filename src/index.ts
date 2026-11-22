@@ -28,7 +28,7 @@ app.use(
   "*",
   cors({
     origin: frontendOrigin(),
-    allowHeaders: ["Content-Type", "Authorization"],
+    allowHeaders: ["Content-Type", "Authorization", "Idempotency-Key"],
     allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     credentials: true,
     exposeHeaders: ["Retry-After", "X-Request-ID"],
