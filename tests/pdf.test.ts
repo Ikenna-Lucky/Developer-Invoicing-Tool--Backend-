@@ -1,6 +1,11 @@
 import { expect, test } from "bun:test";
 import type puppeteer from "puppeteer";
-import { buildInvoicePdfHtml, createInvoicePdfRenderer } from "../src/lib/pdf";
+import { TimeoutError } from "puppeteer";
+import {
+  buildInvoicePdfHtml,
+  createInvoicePdfRenderer,
+  PdfTimeoutError,
+} from "../src/lib/pdf";
 import { safePdfLogo } from "../src/lib/pdf-logo";
 import { invoicePdfInput, pngLogo } from "./fixtures/pdf";
 
@@ -125,4 +130,38 @@ test("launch failures release the renderer without automatic retry", async () =>
   await expect(render(invoicePdfInput())).rejects.toThrow("launch failed");
   await expect(render(invoicePdfInput())).rejects.toThrow("launch failed");
   expect(launches).toBe(2);
+});
+
+test("PDF timeouts identify the failed stage without exposing browser diagnostics", async () => {
+  for (const stage of ["launch", "new_page"] as const) {
+    let closed = false;
+    const launch: typeof puppeteer.launch = async (options) => {
+      expect(options?.timeout).toBe(10_000);
+      expect(options?.protocolTimeout).toBe(10_000);
+      if (stage === "launch")
+        throw new TimeoutError("private browser diagnostics");
+      return {
+        newPage: async () => {
+          throw new TimeoutError("private browser diagnostics");
+        },
+        close: async () => {
+          closed = true;
+        },
+        process: () => null,
+      } as unknown as Awaited<ReturnType<typeof puppeteer.launch>>;
+    };
+    const render = createInvoicePdfRenderer({ launch });
+    let failure: unknown;
+    try {
+      await render(invoicePdfInput());
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(PdfTimeoutError);
+    expect((failure as PdfTimeoutError).stage).toBe(stage);
+    expect((failure as PdfTimeoutError).status).toBe(504);
+    expect((failure as PdfTimeoutError).elapsedMs).toBeGreaterThanOrEqual(0);
+    expect((failure as Error).message).not.toContain("private");
+    expect(closed).toBe(stage === "new_page");
+  }
 });

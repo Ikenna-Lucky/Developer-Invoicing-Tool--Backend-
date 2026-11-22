@@ -745,6 +745,24 @@ async function closeBrowser(browser: Browser) {
   }
 }
 
+type PdfStage =
+  | "launch"
+  | "new_page"
+  | "configure"
+  | "content"
+  | "measure"
+  | "print"
+  | "cleanup";
+
+export class PdfTimeoutError extends HTTPException {
+  constructor(
+    readonly stage: PdfStage,
+    readonly elapsedMs: number,
+  ) {
+    super(504, { message: "PDF generation timed out. Please try again" });
+  }
+}
+
 export function createInvoicePdfRenderer(
   options: {
     launch?: typeof puppeteer.launch;
@@ -768,9 +786,10 @@ export function createInvoicePdfRenderer(
     let browser: Browser | undefined;
     let expired = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new HTTPException(504, {
-      message: "PDF generation timed out. Please try again",
-    });
+    const started = performance.now();
+    let stage: PdfStage = "launch";
+    const timeout = () =>
+      new PdfTimeoutError(stage, Math.round(performance.now() - started));
     const work = async () => {
       try {
         browser = await launch({
@@ -791,8 +810,10 @@ export function createInvoicePdfRenderer(
             "--no-first-run",
           ],
         });
-        if (expired) throw timeout;
+        if (expired) throw timeout();
+        stage = "new_page";
         const page = await browser.newPage();
+        stage = "configure";
         await page.setJavaScriptEnabled(false);
         await page.setCacheEnabled(false);
         await page.setBypassServiceWorker(true);
@@ -806,7 +827,9 @@ export function createInvoicePdfRenderer(
             request.url() === logo;
           void (allowed ? request.continue() : request.abort()).catch(() => {});
         });
+        stage = "content";
         await page.setContent(html, { waitUntil: "load", timeout: timeoutMs });
+        stage = "measure";
         const bodyHeight = await page.evaluate(
           () => document.documentElement.scrollHeight,
         );
@@ -818,6 +841,7 @@ export function createInvoicePdfRenderer(
           throw new HTTPException(422, {
             message: "Invoice is too tall to render as a PDF",
           });
+        stage = "print";
         const result = Buffer.from(
           await page.pdf({
             width: "794px",
@@ -833,9 +857,10 @@ export function createInvoicePdfRenderer(
           });
         return result;
       } catch (error) {
-        if (error instanceof TimeoutError) throw timeout;
+        if (error instanceof TimeoutError) throw timeout();
         throw error;
       } finally {
+        stage = "cleanup";
         if (browser) await closeBrowser(browser);
         active = false;
       }
@@ -847,7 +872,7 @@ export function createInvoicePdfRenderer(
           timer = setTimeout(() => {
             expired = true;
             if (browser) killBrowser(browser);
-            reject(timeout);
+            reject(timeout());
           }, timeoutMs);
         }),
       ]);

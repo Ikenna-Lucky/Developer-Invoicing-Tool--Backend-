@@ -277,6 +277,28 @@ performance, ingress limits/deadlines, and historical oversized values remain
 unverified or deferred. No production migration or deployment was performed.
 See [API limits](api-limits.md) for exact budgets and rollout requirements.
 
+## PDF CI timeout follow-up
+
+The reported GitHub run timed out on its first real Chromium test after roughly
+10 seconds while four later tests passed. The existing launch/protocol deadline
+was 10 seconds; the log did not identify the exact timed-out operation. Cold CI
+startup is plausible, not established as the root cause.
+
+Real-browser security tests now allow a 45-second render with 30-second browser
+startup/protocol deadlines and appropriately bounded test deadlines. Production
+retains its 20-second render and 10-second browser limits. No retry or security
+assertion was removed. Timeout errors carry a fixed stage and elapsed time; failed
+browser checks log those fields, and CI prints the browser version. The separate
+four-second stall test prepares its browser before starting the render timer and
+requires the failure to occur during printing, then verifies cleanup and capacity
+recovery. This prevents a slow launch from satisfying the intentional stall check.
+
+On 22 November 2026, 34 unit tests, five real Windows Chromium tests, TypeScript,
+and workflow YAML parsing passed. The browser suite also passed before the final
+print-stage assertion was added, then was run again with that assertion. Hosted
+Linux CI has not been rerun here; these results do not prove the reported runner
+issue is resolved. Database suites were not rerun for this focused timeout change.
+
 ## Remaining controls
 
 | Area                              | Status and next work                                                                                                                                                                                                                                                                           |
@@ -291,8 +313,8 @@ See [API limits](api-limits.md) for exact budgets and rollout requirements.
 | Data correctness (PR-09)          | Payment, numbering, rounding, deletion, and forward migration tests passed natively. Existing-data reconciliation, offline payment history, and identity snapshots remain.                                                                                                                     |
 | Integrations/jobs (PR-10)         | Durable encrypted email jobs, provider acceptance state, retries, and timeouts are tested locally. Hosted workers, live provider delivery, backpressure, and payment reconciliation remain.                                                                                                    |
 | Tests (PR-11)                     | Financial, invoice isolation, session, and migration regressions passed. Real PDF security tests passed; live OAuth, provider sandboxes, and assembled frontend/API journeys remain.                                                                                                           |
-| UX/contracts (PR-12)              | Frontend pagination controls/selectors/totals must be updated before the paginated contract is deployed to affected users. Edit/delete affordances and client-deletion copy need updates for the 409 responses. Browser flows, session expiry, and accessible recovery remain unverified.                                                                                                                    |
-| Performance/resilience (PR-13/14) | PDF concurrency/deadline/size limits implemented and tested; cursor pagination and list indexes implemented/tested. Workload targets, shutdown, and recovery tests remain undefined.                                                                                                                                              |
+| UX/contracts (PR-12)              | Frontend pagination controls/selectors/totals must be updated before the paginated contract is deployed to affected users. Edit/delete affordances and client-deletion copy need updates for the 409 responses. Browser flows, session expiry, and accessible recovery remain unverified.      |
+| Performance/resilience (PR-13/14) | PDF concurrency/deadline/size limits implemented and tested; cursor pagination and list indexes implemented/tested. Workload targets, shutdown, and recovery tests remain undefined.                                                                                                           |
 | Builds/infrastructure (PR-15/16)  | CI exists; hosted execution, scans, runtime pinning, environment isolation, and deployed secrets/config remain unverified.                                                                                                                                                                     |
 | Delivery (PR-17)                  | Docker migration packaging/startup updated but image unverified. Coordinated migration rollout, enforced merge/deploy gates, and rollback rehearsal remain.                                                                                                                                    |
 | Observability/audit (PR-18)       | JSON logs, request IDs, optional sanitized Sentry events, and transactional database history implemented/tested. Live delivery/alerts, uptime checks, actor/request attribution, restricted database roles, and retention remain.                                                              |

@@ -1,12 +1,37 @@
 import { expect, test } from "bun:test";
 import puppeteer, { type Browser } from "puppeteer";
-import { createInvoicePdfRenderer } from "../src/lib/pdf";
+import { createInvoicePdfRenderer, PdfTimeoutError } from "../src/lib/pdf";
 import { invoicePdfInput } from "./fixtures/pdf";
 
 if (!process.env.PUPPETEER_EXECUTABLE_PATH)
   throw new Error(
     "Set PUPPETEER_EXECUTABLE_PATH to run real Chromium PDF tests",
   );
+
+// Real browser security checks allow for a cold shared CI runner. The short
+// deadline test below exercises timeout enforcement separately.
+function browserRenderer(launch: typeof puppeteer.launch) {
+  const render = createInvoicePdfRenderer({
+    timeoutMs: 45_000,
+    launch: (options) =>
+      launch({ ...options, timeout: 30_000, protocolTimeout: 30_000 }),
+  });
+  return async (input: ReturnType<typeof invoicePdfInput>) => {
+    try {
+      return await render(input);
+    } catch (error) {
+      if (error instanceof PdfTimeoutError)
+        console.error(
+          JSON.stringify({
+            event: "pdf.test_timeout",
+            stage: error.stage,
+            elapsedMs: error.elapsedMs,
+          }),
+        );
+      throw error;
+    }
+  };
+}
 
 test("real Chromium prints invoice text literally and decodes an approved logo", async () => {
   const input = invoicePdfInput();
@@ -47,11 +72,11 @@ test("real Chromium prints invoice text literally and decodes an approved logo",
     };
     return browser;
   };
-  const pdf = await createInvoicePdfRenderer({ launch })(input);
+  const pdf = await browserRenderer(launch)(input);
   expect(pdf.subarray(0, 5).toString()).toBe("%PDF-");
   expect(pdf.length).toBeGreaterThan(1000);
   expect(pdf.length).toBeLessThanOrEqual(5 * 1024 * 1024);
-}, 30_000);
+}, 60_000);
 
 test("request interception blocks document, stylesheet, and image fetches even without CSP", async () => {
   let hits = 0;
@@ -90,7 +115,7 @@ test("request interception blocks document, stylesheet, and image fetches even w
   try {
     const input = invoicePdfInput();
     input.sender.logoUrl = `${server.url}logo`;
-    await createInvoicePdfRenderer({ launch })(input);
+    await browserRenderer(launch)(input);
     expect(attempted).toContain("document");
     expect(attempted).toContain("stylesheet");
     expect(attempted).toContain("image");
@@ -98,7 +123,7 @@ test("request interception blocks document, stylesheet, and image fetches even w
   } finally {
     server.stop(true);
   }
-}, 30_000);
+}, 60_000);
 
 test("busy renders fail promptly and completed requests leave no reusable browser", async () => {
   const browsers: Browser[] = [];
@@ -107,7 +132,7 @@ test("busy renders fail promptly and completed requests leave no reusable browse
     browsers.push(browser);
     return browser;
   };
-  const render = createInvoicePdfRenderer({ launch });
+  const render = browserRenderer(launch);
   const first = render(invoicePdfInput());
   await expect(render(invoicePdfInput())).rejects.toThrow("busy");
   await first;
@@ -115,7 +140,7 @@ test("busy renders fail promptly and completed requests leave no reusable browse
   await render(invoicePdfInput());
   expect(browsers).toHaveLength(2);
   expect(browsers[1].connected).toBe(false);
-}, 45_000);
+}, 110_000);
 
 test("render height and output byte limits stop printing and clean up Chromium", async () => {
   for (const oversized of ["height", "bytes"]) {
@@ -136,24 +161,37 @@ test("render height and output byte limits stop printing and clean up Chromium",
       };
       return browser;
     };
-    await expect(
-      createInvoicePdfRenderer({ launch })(invoicePdfInput()),
-    ).rejects.toThrow(oversized === "height" ? "too tall" : "5 MiB");
+    await expect(browserRenderer(launch)(invoicePdfInput())).rejects.toThrow(
+      oversized === "height" ? "too tall" : "5 MiB",
+    );
     expect(printed).toBe(oversized !== "height");
     expect(browser?.connected).toBe(false);
   }
-}, 45_000);
+}, 110_000);
 
 test("a stalled render is terminated at its deadline and capacity recovers", async () => {
   let browser: Browser | undefined;
   let stall = true;
+  let reachedPrint = false;
+  const prepared = await puppeteer.launch({
+    headless: true,
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH,
+    timeout: 30_000,
+    protocolTimeout: 30_000,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+    ],
+  });
   const launch: typeof puppeteer.launch = async (options) => {
-    browser = await puppeteer.launch({ ...options, timeout: 10000 });
+    browser = stall ? prepared : await puppeteer.launch(options);
     const newPage = browser.newPage.bind(browser);
     browser.newPage = async () => {
       const page = await newPage();
       if (stall)
         page.pdf = async () => {
+          reachedPrint = true;
           await page.evaluate(() => new Promise(() => {}));
           return Buffer.alloc(0);
         };
@@ -162,13 +200,22 @@ test("a stalled render is terminated at its deadline and capacity recovers", asy
     return browser;
   };
   const render = createInvoicePdfRenderer({ launch, timeoutMs: 4000 });
-  await expect(render(invoicePdfInput())).rejects.toThrow("timed out");
-  for (let attempt = 0; attempt < 50 && browser?.connected; attempt++)
-    await Bun.sleep(20);
-  expect(browser?.connected).toBe(false);
-  await Bun.sleep(100);
-  stall = false;
-  expect((await render(invoicePdfInput())).subarray(0, 5).toString()).toBe(
-    "%PDF-",
-  );
-}, 20_000);
+  try {
+    await expect(render(invoicePdfInput())).rejects.toMatchObject({
+      status: 504,
+      stage: "print",
+    });
+    expect(reachedPrint).toBe(true);
+    for (let attempt = 0; attempt < 50 && browser?.connected; attempt++)
+      await Bun.sleep(20);
+    expect(browser?.connected).toBe(false);
+    await Bun.sleep(100);
+    stall = false;
+    expect((await render(invoicePdfInput())).subarray(0, 5).toString()).toBe(
+      "%PDF-",
+    );
+  } finally {
+    await prepared.close().catch(() => {});
+    await browser?.close().catch(() => {});
+  }
+}, 60_000);

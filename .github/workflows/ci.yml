@@ -52,6 +52,7 @@ jobs:
         run: |
           export PUPPETEER_EXECUTABLE_PATH="$(command -v google-chrome || command -v chromium)"
           test -n "$PUPPETEER_EXECUTABLE_PATH"
+          "$PUPPETEER_EXECUTABLE_PATH" --version
           bun run test:pdf
       - name: Install matching PostgreSQL recovery tools
         run: |
