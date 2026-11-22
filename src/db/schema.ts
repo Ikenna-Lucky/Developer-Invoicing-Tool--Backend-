@@ -95,19 +95,29 @@ export const passwordResetTokens = pgTable("password_reset_tokens", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
-export const clients = pgTable("clients", {
-  id: text("id").primaryKey(),
-  userId: text("user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
-  name: text("name").notNull(),
-  email: text("email").notNull(),
-  address: text("address"),
-  phone: text("phone"),
-  companyName: text("company_name"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+export const clients = pgTable(
+  "clients",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    email: text("email").notNull(),
+    address: text("address"),
+    phone: text("phone"),
+    companyName: text("company_name"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    ownerPage: index("clients_owner_page_idx").on(
+      table.userId,
+      table.createdAt,
+      table.id,
+    ),
+  }),
+);
 
 export const emailVerificationTokens = pgTable("email_verification_tokens", {
   id: text("id").primaryKey(),
@@ -168,6 +178,12 @@ export const invoices = pgTable(
       table.invoiceNumber,
     ),
     deletedAtIndex: index("invoices_deleted_at_idx").on(table.deletedAt),
+    activePage: index("invoices_owner_active_page_idx")
+      .on(table.userId, table.createdAt, table.id)
+      .where(sql`${table.deletedAt} IS NULL`),
+    trashPage: index("invoices_owner_trash_page_idx")
+      .on(table.userId, table.deletedAt, table.id)
+      .where(sql`${table.deletedAt} IS NOT NULL`),
   }),
 );
 

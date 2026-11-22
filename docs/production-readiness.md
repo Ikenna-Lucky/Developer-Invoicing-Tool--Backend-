@@ -242,6 +242,41 @@ storage/retention, schedule, and response ownership. Live Neon restore/history,
 independent uploaded generations, backup-failure notifications, production-scale
 restore, and application login/full cutover remain release gates.
 
+## Pagination and request budgets
+
+On 22 November 2026, client, active invoice, and Trash lists gained cursor
+pagination (default 25, maximum 100), stable timestamp/ID ordering with database
+microsecond precision, and validated filters. Search treats wildcard characters
+literally; invoice lists now honor the frontend's existing clientId filter.
+Every continuation retains the owner and active/Trash filters. Migration 0009
+adds owner/time/ID indexes, with explicit partial predicates for invoices because
+the installed migration generator omits them from generated SQL. Plan index
+creation locks against real table sizes before rollout.
+
+API-entry middleware now caps actual streamed body bytes before parsing/database
+work, with budgets for client/auth writes, invoices, profile logos, and Paystack.
+URL length, field lengths, and invoice item counts are bounded. The existing auth
+body helper shares the stream reader; the main entry applies one body-limit pass.
+Rate quotas, invoice totals, authorization, and verification rules are preserved.
+
+Native Bun 1.4.5 passed 135 tests (33 unit and 102 PostgreSQL integration checks),
+with no skips. TypeScript, assembled API smoke checks, and snapshot consistency
+passed. Focused pagination checks passed again after adding a deterministic
+single-row sub-millisecond continuation assertion. Tests cover full traversal,
+ties, scoped active/Trash/status/client/search filters, empty results, crafted
+foreign cursors, deleted anchors, malformed/repeated inputs, write rejection,
+streamed byte boundaries, missing/false length headers, byte preservation, read
+errors, and long URLs. Existing migration and encrypted recovery drills passed
+against migration 0009 on disposable PostgreSQL 16.
+
+This is a backend-only contract change: existing frontend consumers do not yet
+read pagination and will show only the first 25 matches. Update lists, client
+selectors/history, and list-derived totals before deploying to affected users.
+Browser workflows, hosted CI, live provider payload sizes, production index/search
+performance, ingress limits/deadlines, and historical oversized values remain
+unverified or deferred. No production migration or deployment was performed.
+See [API limits](api-limits.md) for exact budgets and rollout requirements.
+
 ## Remaining controls
 
 | Area                              | Status and next work                                                                                                                                                                                                                                                                           |
@@ -256,8 +291,8 @@ restore, and application login/full cutover remain release gates.
 | Data correctness (PR-09)          | Payment, numbering, rounding, deletion, and forward migration tests passed natively. Existing-data reconciliation, offline payment history, and identity snapshots remain.                                                                                                                     |
 | Integrations/jobs (PR-10)         | Durable encrypted email jobs, provider acceptance state, retries, and timeouts are tested locally. Hosted workers, live provider delivery, backpressure, and payment reconciliation remain.                                                                                                    |
 | Tests (PR-11)                     | Financial, invoice isolation, session, and migration regressions passed. Real PDF security tests passed; live OAuth, provider sandboxes, and assembled frontend/API journeys remain.                                                                                                           |
-| UX/contracts (PR-12)              | Frontend edit/delete affordances and client-deletion copy need updates for the new 409 responses. Browser flows, session expiry, and accessible recovery remain unverified.                                                                                                                    |
-| Performance/resilience (PR-13/14) | PDF concurrency/deadline/size limits implemented and tested; pagination remains. Workload targets, shutdown, and recovery tests remain undefined.                                                                                                                                              |
+| UX/contracts (PR-12)              | Frontend pagination controls/selectors/totals must be updated before the paginated contract is deployed to affected users. Edit/delete affordances and client-deletion copy need updates for the 409 responses. Browser flows, session expiry, and accessible recovery remain unverified.                                                                                                                    |
+| Performance/resilience (PR-13/14) | PDF concurrency/deadline/size limits implemented and tested; cursor pagination and list indexes implemented/tested. Workload targets, shutdown, and recovery tests remain undefined.                                                                                                                                              |
 | Builds/infrastructure (PR-15/16)  | CI exists; hosted execution, scans, runtime pinning, environment isolation, and deployed secrets/config remain unverified.                                                                                                                                                                     |
 | Delivery (PR-17)                  | Docker migration packaging/startup updated but image unverified. Coordinated migration rollout, enforced merge/deploy gates, and rollback rehearsal remain.                                                                                                                                    |
 | Observability/audit (PR-18)       | JSON logs, request IDs, optional sanitized Sentry events, and transactional database history implemented/tested. Live delivery/alerts, uptime checks, actor/request attribution, restricted database roles, and retention remain.                                                              |

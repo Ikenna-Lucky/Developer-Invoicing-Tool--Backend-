@@ -185,11 +185,11 @@ export function createAuthRouter(
     zValidator(
       "json",
       z.object({
-        fullName: z.string().min(1).optional(),
-        phone: z.string().optional(),
-        businessName: z.string().optional(),
-        address: z.string().optional(),
-        logoUrl: z.string().optional(), // used as profile avatar (base64 or URL)
+        fullName: z.string().min(1).max(200).optional(),
+        phone: z.string().max(40).optional(),
+        businessName: z.string().max(200).optional(),
+        address: z.string().max(2000).optional(),
+        logoUrl: z.string().max(700000).optional(), // used as profile avatar (base64 or URL)
       }),
     ),
     async (c) => {

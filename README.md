@@ -363,3 +363,9 @@ and `bun run db:restore` (each takes an encrypted file path). The integration su
 includes a real PostgreSQL recovery drill. See [database recovery](docs/database-recovery.md)
 for prerequisites, Neon settings, separate secrets, and validation before cutover.
 Production scheduling and independent storage still need configuration.
+
+Client, invoice, and Trash lists now return cursor-based pages of 25 rows by
+default (maximum 100), retaining `data` and adding `pagination`. The API also caps
+streamed request bodies and invoice/client/profile fields. See [API limits and
+pagination](docs/api-limits.md) for the contract, migration, and frontend rollout
+requirements. Existing frontend views still need next-page handling.

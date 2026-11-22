@@ -1,3 +1,10 @@
+import {
+  listQuery,
+  listPage,
+  beforeCursor,
+  cursorTime,
+  searchPattern,
+} from "../lib/pagination";
 import { reportError } from "../lib/observability";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
@@ -36,7 +43,7 @@ export function createInvoicesRouter(
   invoicesRouter.use("*", createAuthMiddleware(database, true));
 
   const lineItemSchema = z.object({
-    description: z.string().min(1, "Description is required"),
+    description: z.string().min(1, "Description is required").max(500),
     quantity: z
       .number()
       .positive("Quantity must be positive")
@@ -53,37 +60,34 @@ export function createInvoicesRouter(
     clientId: z.string().uuid("Invalid client ID"),
     issueDate: z.string().datetime({ message: "Invalid issue date" }),
     dueDate: z.string().datetime({ message: "Invalid due date" }),
-    notes: z.string().optional(),
-    items: z.array(lineItemSchema).min(1, "At least one line item is required"),
+    notes: z.string().max(5000).optional(),
+    items: z
+      .array(lineItemSchema)
+      .min(1, "At least one line item is required")
+      .max(100),
   });
 
   const updateInvoiceSchema = z.object({
     clientId: z.string().uuid().optional(),
     issueDate: z.string().datetime().optional(),
     dueDate: z.string().datetime().optional(),
-    notes: z.string().optional(),
-    items: z.array(lineItemSchema).min(1).optional(),
+    notes: z.string().max(5000).optional(),
+    items: z.array(lineItemSchema).min(1).max(100).optional(),
   });
 
   const updateStatusSchema = z.object({
     status: z.enum(["draft", "sent", "paid", "overdue"]),
   });
 
-  // GET /invoices — all invoices for the logged-in user with client info,
-  // supports ?status= and ?search= (invoice number or client name)
   invoicesRouter.get("/", async (c) => {
     const userId = c.get("userId");
-    const status = c.req.query("status") as
-      | "draft"
-      | "sent"
-      | "paid"
-      | "overdue"
-      | undefined;
-    const search = c.req.query("search");
+    const query = listQuery(c.req.url, true);
+    const { search, status } = query;
 
     const results = await db
       .select({
         id: invoices.id,
+        cursorTime: cursorTime(invoices.createdAt),
         invoiceNumber: invoices.invoiceNumber,
         status: invoices.status,
         issueDate: invoices.issueDate,
@@ -104,29 +108,35 @@ export function createInvoicesRouter(
       .where(
         and(
           eq(invoices.userId, userId),
-          isNull(invoices.deletedAt), // exclude soft-deleted
+          isNull(invoices.deletedAt),
+          beforeCursor(invoices.createdAt, invoices.id, query.cursor),
           status ? eq(invoices.status, status) : undefined,
+          query.clientId ? eq(invoices.clientId, query.clientId) : undefined,
           search
             ? or(
-                ilike(invoices.invoiceNumber, `%${search}%`),
-                ilike(clients.name, `%${search}%`),
+                ilike(invoices.invoiceNumber, searchPattern(search)),
+                ilike(clients.name, searchPattern(search)),
               )
             : undefined,
         ),
       )
-      .orderBy(desc(invoices.createdAt));
+      .orderBy(desc(invoices.createdAt), desc(invoices.id))
+      .limit(query.limit + 1);
 
-    return c.json({ data: results });
+    return c.json(listPage(results, query.limit));
   });
 
   // GET /invoices/trash — soft-deleted invoices. Has to come before GET /:id
   // or "trash" gets matched as an invoice ID.
   invoicesRouter.get("/trash", async (c) => {
     const userId = c.get("userId");
+    const query = listQuery(c.req.url, true);
+    const { search, status } = query;
 
     const results = await db
       .select({
         id: invoices.id,
+        cursorTime: cursorTime(invoices.deletedAt),
         invoiceNumber: invoices.invoiceNumber,
         status: invoices.status,
         issueDate: invoices.issueDate,
@@ -139,10 +149,25 @@ export function createInvoicesRouter(
       })
       .from(invoices)
       .leftJoin(clients, eq(invoices.clientId, clients.id))
-      .where(and(eq(invoices.userId, userId), isNotNull(invoices.deletedAt)))
-      .orderBy(desc(invoices.deletedAt));
+      .where(
+        and(
+          eq(invoices.userId, userId),
+          isNotNull(invoices.deletedAt),
+          beforeCursor(invoices.deletedAt, invoices.id, query.cursor),
+          status ? eq(invoices.status, status) : undefined,
+          query.clientId ? eq(invoices.clientId, query.clientId) : undefined,
+          search
+            ? or(
+                ilike(invoices.invoiceNumber, searchPattern(search)),
+                ilike(clients.name, searchPattern(search)),
+              )
+            : undefined,
+        ),
+      )
+      .orderBy(desc(invoices.deletedAt), desc(invoices.id))
+      .limit(query.limit + 1);
 
-    return c.json({ data: results });
+    return c.json(listPage(results, query.limit));
   });
 
   // GET /invoices/:id — single invoice with line items and client

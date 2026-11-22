@@ -8,10 +8,8 @@ import { validateAuthConfiguration } from "./lib/jwt";
 import { db } from "./db";
 import { emailQueueKey, startEmailWorker } from "./lib/email-queue";
 import { createCsrfProtection, frontendOrigin } from "./middleware/csrf";
-import {
-  createAuthBodyLimit,
-  createAuthRateLimit,
-} from "./middleware/rate-limit";
+import { createRequestLimits } from "./middleware/request-limits";
+import { createAuthRateLimit } from "./middleware/rate-limit";
 
 import health from "./routes/health";
 import auth from "./routes/auth";
@@ -35,7 +33,7 @@ app.use(
 );
 app.use("*", prettyJSON());
 app.use("*", createCsrfProtection());
-app.use("*", createAuthBodyLimit());
+app.use("*", createRequestLimits());
 app.use("*", createAuthRateLimit(db));
 
 app.route("/health", health);

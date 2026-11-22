@@ -1,7 +1,14 @@
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
-import { eq, and, desc, ilike, or } from "drizzle-orm";
+import { eq, and, desc, ilike, or, getTableColumns } from "drizzle-orm";
+import {
+  listQuery,
+  listPage,
+  beforeCursor,
+  cursorTime,
+  searchPattern,
+} from "../lib/pagination";
 
 import { db as defaultDb, type DB } from "../db";
 import { deleteClientWithoutInvoices } from "../lib/invoices";
@@ -18,40 +25,45 @@ export function createClientsRouter(database: DB = defaultDb) {
   clientsRouter.use("*", createAuthMiddleware(database, true));
 
   const createClientSchema = z.object({
-    name: z.string().min(2, "Name must be at least 2 characters"),
-    email: z.string().email("Please provide a valid email address"),
-    companyName: z.string().optional(),
-    phone: z.string().optional(),
-    address: z.string().optional(),
+    name: z.string().min(2, "Name must be at least 2 characters").max(200),
+    email: z.string().email("Please provide a valid email address").max(254),
+    companyName: z.string().max(200).optional(),
+    phone: z.string().max(40).optional(),
+    address: z.string().max(2000).optional(),
   });
 
   // .partial() makes every field optional so updates can send just what changed
   const updateClientSchema = createClientSchema.partial();
 
-  // GET /clients — all clients for the logged-in user, newest first, with
-  // optional ?search= filtering on name/email/company
+  // Keep the ID tie-breaker when several clients share a creation timestamp.
   clientsRouter.get("/", async (c) => {
     const userId = c.get("userId");
-    const search = c.req.query("search");
+    const query = listQuery(c.req.url);
+    const { search } = query;
 
     const results = await db
-      .select()
+      .select({
+        ...getTableColumns(clients),
+        cursorTime: cursorTime(clients.createdAt),
+      })
       .from(clients)
       .where(
-        search
-          ? and(
-              eq(clients.userId, userId),
-              or(
-                ilike(clients.name, `%${search}%`),
-                ilike(clients.email, `%${search}%`),
-                ilike(clients.companyName, `%${search}%`),
-              ),
-            )
-          : eq(clients.userId, userId),
+        and(
+          eq(clients.userId, userId),
+          beforeCursor(clients.createdAt, clients.id, query.cursor),
+          search
+            ? or(
+                ilike(clients.name, searchPattern(search)),
+                ilike(clients.email, searchPattern(search)),
+                ilike(clients.companyName, searchPattern(search)),
+              )
+            : undefined,
+        ),
       )
-      .orderBy(desc(clients.createdAt));
+      .orderBy(desc(clients.createdAt), desc(clients.id))
+      .limit(query.limit + 1);
 
-    return c.json({ data: results });
+    return c.json(listPage(results, query.limit));
   });
 
   // GET /clients/:id

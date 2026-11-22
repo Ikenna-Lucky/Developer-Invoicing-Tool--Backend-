@@ -1,3 +1,4 @@
+import { boundedBody } from "./request-limits";
 import { createHash } from "node:crypto";
 import { isIP } from "node:net";
 import { sql } from "drizzle-orm";
@@ -133,29 +134,11 @@ export function createAuthRateLimit(database: DB, hops = proxyHops()) {
 
 export function createAuthBodyLimit() {
   return createMiddleware(async (c, next) => {
-    if (policies[c.req.path.replace(/\/$/, "")] && c.req.raw.body) {
-      const reader = c.req.raw.body.getReader();
-      const chunks: Uint8Array[] = [];
-      let size = 0;
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          size += value.byteLength;
-          if (size > 16 * 1024) {
-            await reader.cancel();
-            return c.json(
-              { error: "Authentication request is too large" },
-              413,
-            );
-          }
-          chunks.push(value);
-        }
-      } catch {
-        return c.json({ error: "Could not read the request body" }, 400);
-      }
-      c.req.raw = new Request(c.req.raw, { body: Buffer.concat(chunks) });
-    }
+    if (policies[c.req.path.replace(/\/$/, "")])
+      return boundedBody(16 * 1024, "Authentication request is too large")(
+        c,
+        next,
+      );
     await next();
   });
 }
