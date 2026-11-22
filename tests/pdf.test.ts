@@ -165,3 +165,35 @@ test("PDF timeouts identify the failed stage without exposing browser diagnostic
     expect(closed).toBe(stage === "new_page");
   }
 });
+
+test("PDF shutdown rejects new work and waits for a late launch to close", async () => {
+  let resolve!: (browser: unknown) => void;
+  let killed = 0,
+    closed = 0;
+  const launch = (() =>
+    new Promise<unknown>((done) => {
+      resolve = done;
+    })) as typeof puppeteer.launch;
+  const render = createInvoicePdfRenderer({ launch, timeoutMs: 20 });
+  await expect(render(invoicePdfInput())).rejects.toThrow("timed out");
+  let stopped = false;
+  const stopping = render.shutdown().then(() => {
+    stopped = true;
+  });
+  await expect(render(invoicePdfInput())).rejects.toThrow("shutting down");
+  expect(stopped).toBe(false);
+  resolve({
+    close: async () => {
+      closed++;
+    },
+    process: () => ({
+      exitCode: null,
+      kill: () => {
+        killed++;
+      },
+    }),
+  });
+  await stopping;
+  expect(closed).toBe(1);
+  expect(killed).toBe(1);
+});

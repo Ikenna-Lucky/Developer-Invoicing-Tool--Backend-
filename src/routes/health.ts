@@ -1,37 +1,51 @@
 import { Hono } from "hono";
-import { db } from "../db";
-import { sql } from "drizzle-orm";
 
-const health = new Hono();
-
-// GET /health — basic liveness check
-health.get("/", (c) => {
-  return c.json({
-    status: "ok",
-    timestamp: new Date().toISOString(),
-    service: "developer-invoicing-api",
+export function createHealthRouter(
+  checkDatabase: () => Promise<boolean>,
+  isDraining: () => boolean,
+) {
+  const health = new Hono();
+  health.use("*", async (c, next) => {
+    c.header("Cache-Control", "no-store");
+    await next();
   });
-});
-
-// GET /health/db — checks that the database connection is alive
-health.get("/db", async (c) => {
-  try {
-    await db.execute(sql`SELECT 1`);
-    return c.json({
+  health.get("/", (c) =>
+    c.json({
       status: "ok",
-      database: "connected",
       timestamp: new Date().toISOString(),
-    });
-  } catch (error) {
+      service: "developer-invoicing-api",
+    }),
+  );
+  health.get("/ready", async (c) => {
+    const ready =
+      !isDraining() &&
+      (await checkDatabase().catch(() => false)) &&
+      !isDraining();
     return c.json(
-      {
-        status: "error",
-        database: "disconnected",
-        message: "Could not reach the database",
-      },
-      500
+      { status: ready ? "ready" : "unavailable" },
+      ready ? 200 : 503,
     );
-  }
-});
-
-export default health;
+  });
+  // Keep the legacy diagnostic response; Render should use /health/ready.
+  health.get("/db", async (c) => {
+    const ready =
+      !isDraining() &&
+      (await checkDatabase().catch(() => false)) &&
+      !isDraining();
+    return ready
+      ? c.json({
+          status: "ok",
+          database: "connected",
+          timestamp: new Date().toISOString(),
+        })
+      : c.json(
+          {
+            status: "error",
+            database: "disconnected",
+            message: "Could not reach the database",
+          },
+          500,
+        );
+  });
+  return health;
+}

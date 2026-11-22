@@ -10,13 +10,15 @@ if (!connectionString) {
 
 // Disable prepared statements for compatibility with transaction poolers.
 const client = postgres(connectionString, {
-  ssl:             "require",
-  prepare:         false,
-  max:             10,
-  idle_timeout:    20,
+  ssl: "require",
+  prepare: false,
+  max: 10,
+  idle_timeout: 20,
   connect_timeout: 10,
 });
 
 export const db = drizzle(client, { schema });
+let closing: Promise<void> | undefined;
+export const closeDatabase = () => (closing ??= client.end({ timeout: 2 }));
 
 export type DB = typeof db;

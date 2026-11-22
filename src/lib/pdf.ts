@@ -772,7 +772,14 @@ export function createInvoicePdfRenderer(
   const launch = options.launch ?? puppeteer.launch.bind(puppeteer);
   const timeoutMs = options.timeoutMs ?? 20_000;
   let active = false;
-  return async (input: PDFInput): Promise<Buffer> => {
+  let stopping = false;
+  let currentWork: Promise<Buffer> | undefined;
+  const browsers = new Set<Browser>();
+  const render = async (input: PDFInput): Promise<Buffer> => {
+    if (stopping)
+      throw new HTTPException(503, {
+        message: "PDF renderer is shutting down",
+      });
     if (active)
       throw new HTTPException(503, {
         message: "PDF renderer is busy. Please try again shortly",
@@ -798,6 +805,9 @@ export function createInvoicePdfRenderer(
             process.env.PUPPETEER_EXECUTABLE_PATH ?? "/usr/bin/chromium",
           timeout: Math.min(10_000, timeoutMs),
           protocolTimeout: Math.min(10_000, timeoutMs),
+          handleSIGTERM: false,
+          handleSIGINT: false,
+          handleSIGHUP: false,
           args: [
             "--no-sandbox",
             "--disable-setuid-sandbox",
@@ -810,6 +820,7 @@ export function createInvoicePdfRenderer(
             "--no-first-run",
           ],
         });
+        browsers.add(browser);
         if (expired) throw timeout();
         stage = "new_page";
         const page = await browser.newPage();
@@ -861,13 +872,22 @@ export function createInvoicePdfRenderer(
         throw error;
       } finally {
         stage = "cleanup";
-        if (browser) await closeBrowser(browser);
+        if (browser) {
+          await closeBrowser(browser);
+          browsers.delete(browser);
+        }
         active = false;
       }
     };
     try {
+      const pendingWork = work();
+      currentWork = pendingWork;
+      const clearWork = () => {
+        if (currentWork === pendingWork) currentWork = undefined;
+      };
+      void pendingWork.then(clearWork, clearWork);
       return await Promise.race([
-        work(),
+        pendingWork,
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => {
             expired = true;
@@ -880,6 +900,16 @@ export function createInvoicePdfRenderer(
       clearTimeout(timer);
     }
   };
+  return Object.assign(render, {
+    async shutdown(force = false) {
+      stopping = true;
+      if (force) {
+        for (const browser of browsers) killBrowser(browser);
+        return;
+      }
+      await currentWork?.catch(() => {});
+    },
+  });
 }
 
 export const generateInvoicePDF = createInvoicePdfRenderer();

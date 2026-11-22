@@ -219,3 +219,83 @@ test("a stalled render is terminated at its deadline and capacity recovers", asy
     await browser?.close().catch(() => {});
   }
 }, 60_000);
+
+test("PDF shutdown lets an accepted print finish and refuses further renders", async () => {
+  let browser!: Browser;
+  let entered!: () => void, release!: () => void;
+  const printing = new Promise<void>((done) => {
+    entered = done;
+  });
+  const released = new Promise<void>((done) => {
+    release = done;
+  });
+  const launch: typeof puppeteer.launch = async (options) => {
+    expect(options?.handleSIGTERM).toBe(false);
+    browser = await puppeteer.launch(options);
+    const newPage = browser.newPage.bind(browser);
+    browser.newPage = async () => {
+      const page = await newPage();
+      const pdf = page.pdf.bind(page);
+      page.pdf = async (options) => {
+        entered();
+        await released;
+        return pdf(options);
+      };
+      return page;
+    };
+    return browser;
+  };
+  const render = createInvoicePdfRenderer({ launch, timeoutMs: 45_000 });
+  const pending = render(invoicePdfInput());
+  try {
+    await Promise.race([printing, pending]);
+    const stopping = render.shutdown();
+    await expect(render(invoicePdfInput())).rejects.toThrow("shutting down");
+    expect(browser.connected).toBe(true);
+    release();
+    expect((await pending).subarray(0, 5).toString()).toBe("%PDF-");
+    await stopping;
+    expect(browser.connected).toBe(false);
+  } finally {
+    release();
+    await pending.catch(() => {});
+    await render.shutdown(true);
+  }
+}, 60_000);
+
+test("forced PDF shutdown terminates a browser stuck during printing", async () => {
+  let browser!: Browser, entered!: () => void;
+  const printing = new Promise<void>((done) => {
+    entered = done;
+  });
+  const launch: typeof puppeteer.launch = async (options) => {
+    browser = await puppeteer.launch(options);
+    const newPage = browser.newPage.bind(browser);
+    browser.newPage = async () => {
+      const page = await newPage();
+      page.pdf = async () => {
+        entered();
+        await page.evaluate(() => new Promise(() => {}));
+        return Buffer.alloc(0);
+      };
+      return page;
+    };
+    return browser;
+  };
+  const render = createInvoicePdfRenderer({ launch, timeoutMs: 45_000 });
+  const pending = render(invoicePdfInput());
+  const finished = pending.then(
+    () => false,
+    () => true,
+  );
+  try {
+    await Promise.race([printing, pending]);
+    await render.shutdown(true);
+    expect(await finished).toBe(true);
+    expect(browser.connected).toBe(false);
+    await expect(render(invoicePdfInput())).rejects.toThrow("shutting down");
+  } finally {
+    await render.shutdown(true);
+    await finished;
+  }
+}, 60_000);

@@ -23,6 +23,7 @@ import {
   decryptEmail,
   enqueueEmail,
   processNextEmail,
+  startEmailWorker,
 } from "../../src/lib/email-queue";
 import type { DB } from "../../src/db";
 
@@ -96,6 +97,45 @@ async function saved(id: string) {
 const accepted = async () => ({
   accepted: true as const,
   id: "provider-message",
+});
+
+test("stopping the live queue loop commits its active acceptance and leaves new jobs pending", async () => {
+  const first = await plainJob();
+  let enter!: () => void, release!: () => void;
+  const entered = new Promise<void>((done) => {
+    enter = done;
+  });
+  const delivered = new Promise<void>((done) => {
+    release = done;
+  });
+  const stop = startEmailWorker(
+    database,
+    (db) =>
+      processNextEmail(db, async () => {
+        enter();
+        await delivered;
+        return accepted();
+      }),
+    5,
+  );
+  try {
+    await entered;
+    const second = await plainJob();
+    let finished = false;
+    const stopping = stop().then(() => {
+      finished = true;
+    });
+    await Bun.sleep(10);
+    expect(finished).toBe(false);
+    release();
+    await stopping;
+    await Bun.sleep(15);
+    expect((await saved(first.id)).status).toBe("accepted");
+    expect((await saved(second.id)).status).toBe("pending");
+  } finally {
+    release();
+    await stop();
+  }
 });
 
 test("registration atomically creates one hashed verification token and encrypted queued email", async () => {

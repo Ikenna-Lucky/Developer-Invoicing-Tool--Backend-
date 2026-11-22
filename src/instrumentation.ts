@@ -8,7 +8,7 @@ export function sanitizeMonitoringEvent(
   const candidate = event.tags?.billdEvent ?? event.message;
   const name =
     typeof candidate === "string" &&
-    /^(monitoring\.check|runtime\.fatal|request\.failed|session\.revocation_failed|oauth\.(exchange|callback)_failed|pdf\.failed|paystack\.(checkout_failed|webhook_failed|not_configured)|email\.(worker|delivery)_failed)$/.test(
+    /^(api\.(start_failed|shutdown_failed|shutdown_forced)|monitoring\.check|runtime\.fatal|request\.failed|session\.revocation_failed|oauth\.(exchange|callback)_failed|pdf\.failed|paystack\.(checkout_failed|webhook_failed|not_configured)|email\.(worker|delivery)_failed)$/.test(
       candidate,
     )
       ? candidate
@@ -106,3 +106,5 @@ if (process.env.NODE_ENV !== "test") {
   process.on("uncaughtException", fatal);
   process.on("unhandledRejection", fatal);
 }
+
+export const flushMonitoring = () => Sentry.flush(1000);

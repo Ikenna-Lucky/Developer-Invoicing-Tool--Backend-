@@ -299,6 +299,38 @@ print-stage assertion was added, then was run again with that assertion. Hosted
 Linux CI has not been rerun here; these results do not prove the reported runner
 issue is resolved. Database suites were not rerun for this focused timeout change.
 
+## Graceful shutdown and database readiness — 22 November 2026
+
+PR-14/16: implemented with local verification. The API owns its Bun listener,
+rejects new business work during a drain, waits for accepted HTTP requests and the
+active email job, closes PDF/database resources, and attempts a monitoring flush.
+A 25-second deadline forces termination with a failure exit. `/health/ready` uses
+a separate bounded PostgreSQL probe; `/health` remains independent of the database.
+The production entry applies migrations and starts the API in the same process.
+See [server lifecycle](server-lifecycle.md) for configuration and failure behavior.
+
+Final verification on Bun 1.4.5: TypeScript passed; 44 unit/runtime tests passed
+with one Windows-only POSIX signal test skipped; all seven real Chrome tests
+passed (33 assertions). Earlier in this build, the combined regression run passed
+150 tests with that one skip, including 106 PostgreSQL integration tests. Focused
+readiness checks passed after the transaction-local timeout change. A disposable
+TLS-enabled PostgreSQL startup check applied all ten migrations, returned ready,
+and shut down cleanly. External email/payment services were disabled or stubbed.
+
+An interrupted repeat browser run failed with socket resets, a locked Chrome
+profile, and a stalled-render timeout; the final sequential run passed without
+relaxing assertions. The repeated full regression run was interrupted when local
+Docker became unavailable. Docker still could not start during final verification,
+so the complete database suite was not repeated against the final artifact and
+the disposable `billd-review-postgres` container could not be removed. Remove it
+once Docker is available. Running through the older global Bun 1.3.12 also stalled;
+final checks used the CI-matched Bun 1.4.5 directly.
+
+Hosted Linux SIGTERM behavior, the deployment image, Render routing/draining,
+production workload, and live-provider completion remain unverified. Configure
+Render readiness and shutdown timing as documented, then rehearse a deployment.
+No production configuration, deployment, or database was changed.
+
 ## Remaining controls
 
 | Area                              | Status and next work                                                                                                                                                                                                                                                                           |
@@ -314,7 +346,7 @@ issue is resolved. Database suites were not rerun for this focused timeout chang
 | Integrations/jobs (PR-10)         | Durable encrypted email jobs, provider acceptance state, retries, and timeouts are tested locally. Hosted workers, live provider delivery, backpressure, and payment reconciliation remain.                                                                                                    |
 | Tests (PR-11)                     | Financial, invoice isolation, session, and migration regressions passed. Real PDF security tests passed; live OAuth, provider sandboxes, and assembled frontend/API journeys remain.                                                                                                           |
 | UX/contracts (PR-12)              | Frontend pagination controls/selectors/totals must be updated before the paginated contract is deployed to affected users. Edit/delete affordances and client-deletion copy need updates for the 409 responses. Browser flows, session expiry, and accessible recovery remain unverified.      |
-| Performance/resilience (PR-13/14) | PDF concurrency/deadline/size limits implemented and tested; cursor pagination and list indexes implemented/tested. Workload targets, shutdown, and recovery tests remain undefined.                                                                                                           |
+| Performance/resilience (PR-13/14) | PDF concurrency/deadline/size limits implemented and tested; cursor pagination and list indexes implemented/tested. Shutdown and readiness have local test evidence; hosted draining, workload targets, and recovery targets remain unverified.                                                |
 | Builds/infrastructure (PR-15/16)  | CI exists; hosted execution, scans, runtime pinning, environment isolation, and deployed secrets/config remain unverified.                                                                                                                                                                     |
 | Delivery (PR-17)                  | Docker migration packaging/startup updated but image unverified. Coordinated migration rollout, enforced merge/deploy gates, and rollback rehearsal remain.                                                                                                                                    |
 | Observability/audit (PR-18)       | JSON logs, request IDs, optional sanitized Sentry events, and transactional database history implemented/tested. Live delivery/alerts, uptime checks, actor/request attribution, restricted database roles, and retention remain.                                                              |

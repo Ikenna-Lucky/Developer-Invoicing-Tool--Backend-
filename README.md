@@ -91,6 +91,7 @@ Paystack webhooks require a valid signature.
 **Health**
 
 - `GET /health` — liveness check
+- `GET /health/ready` — bounded database readiness (200 or 503)
 - `GET /health/db` — checks the database connection
 
 **Auth** (`/auth`)
@@ -369,3 +370,10 @@ default (maximum 100), retaining `data` and adding `pagination`. The API also ca
 streamed request bodies and invoice/client/profile fields. See [API limits and
 pagination](docs/api-limits.md) for the contract, migration, and frontend rollout
 requirements. Existing frontend views still need next-page handling.
+
+The backend now drains accepted requests and its active email job on shutdown,
+closes Chromium/database resources, and exits within a 25-second budget. For
+Render, configure `/health/ready` as the health check and use the direct
+`bun scripts/start.ts` startup command when running without Docker. See
+[server lifecycle](docs/server-lifecycle.md) for signal handling, deployment
+configuration, timeout behavior, and verification limits.

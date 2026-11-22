@@ -42,4 +42,4 @@ COPY . .
 # Render injects PORT at runtime; default to 3001 for local Docker runs
 EXPOSE 3001
 
-CMD ["bun", "run", "start"]
+CMD ["bun", "scripts/start.ts"]

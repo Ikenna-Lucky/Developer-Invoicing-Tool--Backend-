@@ -235,19 +235,30 @@ export async function processNextEmail(
   return true;
 }
 
-export function startEmailWorker(database: DB) {
-  let running = false;
-  const timer = setInterval(async () => {
-    if (running) return;
-    running = true;
-    try {
-      await processNextEmail(database);
-    } catch (error) {
-      reportError("email.worker_failed", error);
-    } finally {
-      running = false;
-    }
-  }, 2000);
+export function startEmailWorker(
+  database: DB,
+  processJob = processNextEmail,
+  intervalMs = 2000,
+) {
+  let stopped = false;
+  let running: Promise<void> | undefined;
+  const timer = setInterval(() => {
+    if (stopped || running) return;
+    running = Promise.resolve()
+      .then(async () => {
+        if (!stopped) await processJob(database);
+      })
+      .catch((error) => {
+        reportError("email.worker_failed", error);
+      })
+      .finally(() => {
+        running = undefined;
+      });
+  }, intervalMs);
   timer.unref();
-  return () => clearInterval(timer);
+  return async () => {
+    stopped = true;
+    clearInterval(timer);
+    await running;
+  };
 }

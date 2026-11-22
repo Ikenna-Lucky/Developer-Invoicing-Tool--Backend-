@@ -27,7 +27,7 @@ import {
   emailJobs,
 } from "../db/schema";
 import { createAuthMiddleware } from "../middleware/auth";
-import { generateInvoicePDF } from "../lib/pdf";
+import { generateInvoicePDF, type PDFInput } from "../lib/pdf";
 import { escapeEmailHtml } from "../lib/email";
 import { enqueueEmail } from "../lib/email-queue";
 import { consumeRateLimit } from "../middleware/rate-limit";
@@ -35,7 +35,7 @@ import type { Variables } from "../types";
 
 export function createInvoicesRouter(
   database: DB = defaultDb,
-  renderPdf = generateInvoicePDF,
+  renderPdf: (input: PDFInput) => Promise<Buffer> = generateInvoicePDF,
 ) {
   const db = database;
   const invoicesRouter = new Hono<{ Variables: Variables }>();

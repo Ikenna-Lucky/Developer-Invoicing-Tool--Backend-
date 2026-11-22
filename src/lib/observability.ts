@@ -18,7 +18,12 @@ export type RuntimeEvent =
   | "paystack.not_configured"
   | "email.worker_failed"
   | "email.delivery_failed"
-  | "api.started";
+  | "api.started"
+  | "api.start_failed"
+  | "api.shutdown_started"
+  | "api.shutdown_failed"
+  | "api.shutdown_forced"
+  | "api.stopped";
 
 type LogFields = {
   method?: string;
