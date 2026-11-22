@@ -3,3 +3,7 @@ node_modules
 !.env.example
 .git
 *.log
+backups
+*.billd-backup
+*.dump
+*.sql.gz

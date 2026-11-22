@@ -357,3 +357,9 @@ Runtime logs now use JSON events and server-generated request IDs. Optional
 `SENTRY_DSN` enables redacted backend error reporting; migration 0008 records
 transactional audit history. See [monitoring setup and audit limits](docs/monitoring.md)
 for Render configuration, the manual verification command, and remaining controls.
+
+Encrypted database exports and guarded restores are available as `bun run db:backup`
+and `bun run db:restore` (each takes an encrypted file path). The integration suite
+includes a real PostgreSQL recovery drill. See [database recovery](docs/database-recovery.md)
+for prerequisites, Neon settings, separate secrets, and validation before cutover.
+Production scheduling and independent storage still need configuration.

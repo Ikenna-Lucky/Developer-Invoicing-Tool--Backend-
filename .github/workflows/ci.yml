@@ -53,7 +53,12 @@ jobs:
           export PUPPETEER_EXECUTABLE_PATH="$(command -v google-chrome || command -v chromium)"
           test -n "$PUPPETEER_EXECUTABLE_PATH"
           bun run test:pdf
-      - name: Check sessions, financial records, and migrations against PostgreSQL
+      - name: Install matching PostgreSQL recovery tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes postgresql-client-16
+          echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
+      - name: Check sessions, financial records, migrations, and backup recovery
         env:
           TEST_DATABASE_URL: postgresql://ci:ci@localhost:5432/billd_test
         run: bun run test:integration

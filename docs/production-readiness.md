@@ -209,29 +209,62 @@ separate migration/runtime roles, decide retention/export policy, monitor table
 and queue growth, verify backup/restore, and configure/test alerts before release.
 See [monitoring setup](monitoring.md) for Render steps and the manual check.
 
+## Backup and recovery changes
+
+On 22 November 2026, the maintainer confirmed Neon hosting. Separate operator
+commands stream custom pg_dump archives through AES-256-GCM and authenticate the
+entire encrypted archive before restoration. Restores require an explicitly named
+empty recovery database and use one transaction without clean/drop flags. Backup
+files are never overwritten; failed exports remove partial files. Secrets stay
+out of command arguments, output logs, and backup filenames. Temporary decrypted
+restore files use restricted local permissions and normal-path cleanup; abrupt
+termination still requires private operator cleanup.
+
+The real PostgreSQL 16 drill compared recovered financial data, audit records,
+email jobs, counters, and migration history, and verified original-key email
+payload decryption, financial/audit protections, next invoice number, and payment
+replay behavior. Wrong keys, archive tampering, populated targets, existing backup
+files, failed dumps, unsafe URLs, and missing restore confirmation were rejected.
+The tiny synthetic restore took about 1.5 seconds excluding database provisioning
+and service recovery; it is not a production RTO measurement.
+
+Native Bun 1.4.5 passed 127 tests (30 unit and 97 PostgreSQL integration checks)
+with no skips. TypeScript passed. Windows used PostgreSQL client utilities inside
+the disposable Docker server; native Linux client execution and hosted CI remain
+unverified. CI installs matching PostgreSQL 16 clients and includes the drill.
+No app code, production database, Neon settings, scheduler, or upload destination
+was changed. No new dependency or database migration was needed.
+
+See [database recovery](database-recovery.md) for direct Neon connections, separate
+key custody, configuration recovery, session/token revival, email/payment
+reconciliation, and validation before cutover. The owner must approve RPO/RTO,
+storage/retention, schedule, and response ownership. Live Neon restore/history,
+independent uploaded generations, backup-failure notifications, production-scale
+restore, and application login/full cutover remain release gates.
+
 ## Remaining controls
 
-| Area | Status and next work |
-|---|---|
-| Product rules (PR-01) | Invoice transitions and draft-only editing/deletion implemented. Settlement routing, offline payment audit, and release acceptance criteria remain. |
-| Maintainability (PR-02) | Payment recording extracted into a focused operation; template extraction and naming cleanup remain. |
-| Threats (PR-03) | Planned: document abuse and failure cases across authentication, payments, PDFs, and external services. |
-| Identity and sessions (PR-04/05) | Atomic reset/refresh, unique tokens, consistent deadlines, and server-side revocation implemented and tested. Shared IP/account rate limits are tested. Email verification and account gates are tested. Deployed proxy validation, replay escalation policy, and browser verification remain. |
-| Ownership (PR-06) | Cross-user invoice read/edit/send/delete and client selection tests passed. Wider auth/client workflows remain. Team roles are outside the current individual-user model. |
-| API security (PR-07) | Exact origin CSRF checks and bounded authentication bodies implemented/tested. PDF escaping, network denial, logo validation, and render limits are tested. Wider request limits and configuration checks remain. |
-| Privacy and retention (PR-08) | Allowlisted operational logs and outgoing monitoring events implemented/tested. Account export/deletion and retention rules remain. |
-| Data correctness (PR-09) | Payment, numbering, rounding, deletion, and forward migration tests passed natively. Existing-data reconciliation, offline payment history, and identity snapshots remain. |
-| Integrations/jobs (PR-10) | Durable encrypted email jobs, provider acceptance state, retries, and timeouts are tested locally. Hosted workers, live provider delivery, backpressure, and payment reconciliation remain. |
-| Tests (PR-11) | Financial, invoice isolation, session, and migration regressions passed. Real PDF security tests passed; live OAuth, provider sandboxes, and assembled frontend/API journeys remain. |
-| UX/contracts (PR-12) | Frontend edit/delete affordances and client-deletion copy need updates for the new 409 responses. Browser flows, session expiry, and accessible recovery remain unverified. |
-| Performance/resilience (PR-13/14) | PDF concurrency/deadline/size limits implemented and tested; pagination remains. Workload targets, shutdown, and recovery tests remain undefined. |
-| Builds/infrastructure (PR-15/16) | CI exists; hosted execution, scans, runtime pinning, environment isolation, and deployed secrets/config remain unverified. |
-| Delivery (PR-17) | Docker migration packaging/startup updated but image unverified. Coordinated migration rollout, enforced merge/deploy gates, and rollback rehearsal remain. |
-| Observability/audit (PR-18) | JSON logs, request IDs, optional sanitized Sentry events, and transactional database history implemented/tested. Live delivery/alerts, uptime checks, actor/request attribution, restricted database roles, and retention remain. |
-| Recovery (PR-19) | Unverified: backup coverage and an exercised restore. Set acceptable data loss and recovery time with the maintainer. |
-| Operations/governance (PR-20/21) | Planned: name the responder and release decision maker; document incident and payment-repair procedures. No risks have been accepted on the owner's behalf. |
-| Maintenance (PR-22) | Planned: dependency updates, vulnerability triage, access reviews, and recurring restore checks. |
-| Financial assurance (PR-23) | Required: reconciliation, settlement ownership, refunds/disputes, and immutable financial history appropriate to the supported product scope. |
+| Area                              | Status and next work                                                                                                                                                                                                                                                                           |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Product rules (PR-01)             | Invoice transitions and draft-only editing/deletion implemented. Settlement routing, offline payment audit, and release acceptance criteria remain.                                                                                                                                            |
+| Maintainability (PR-02)           | Payment recording extracted into a focused operation; template extraction and naming cleanup remain.                                                                                                                                                                                           |
+| Threats (PR-03)                   | Planned: document abuse and failure cases across authentication, payments, PDFs, and external services.                                                                                                                                                                                        |
+| Identity and sessions (PR-04/05)  | Atomic reset/refresh, unique tokens, consistent deadlines, and server-side revocation implemented and tested. Shared IP/account rate limits are tested. Email verification and account gates are tested. Deployed proxy validation, replay escalation policy, and browser verification remain. |
+| Ownership (PR-06)                 | Cross-user invoice read/edit/send/delete and client selection tests passed. Wider auth/client workflows remain. Team roles are outside the current individual-user model.                                                                                                                      |
+| API security (PR-07)              | Exact origin CSRF checks and bounded authentication bodies implemented/tested. PDF escaping, network denial, logo validation, and render limits are tested. Wider request limits and configuration checks remain.                                                                              |
+| Privacy and retention (PR-08)     | Allowlisted operational logs and outgoing monitoring events implemented/tested. Account export/deletion and retention rules remain.                                                                                                                                                            |
+| Data correctness (PR-09)          | Payment, numbering, rounding, deletion, and forward migration tests passed natively. Existing-data reconciliation, offline payment history, and identity snapshots remain.                                                                                                                     |
+| Integrations/jobs (PR-10)         | Durable encrypted email jobs, provider acceptance state, retries, and timeouts are tested locally. Hosted workers, live provider delivery, backpressure, and payment reconciliation remain.                                                                                                    |
+| Tests (PR-11)                     | Financial, invoice isolation, session, and migration regressions passed. Real PDF security tests passed; live OAuth, provider sandboxes, and assembled frontend/API journeys remain.                                                                                                           |
+| UX/contracts (PR-12)              | Frontend edit/delete affordances and client-deletion copy need updates for the new 409 responses. Browser flows, session expiry, and accessible recovery remain unverified.                                                                                                                    |
+| Performance/resilience (PR-13/14) | PDF concurrency/deadline/size limits implemented and tested; pagination remains. Workload targets, shutdown, and recovery tests remain undefined.                                                                                                                                              |
+| Builds/infrastructure (PR-15/16)  | CI exists; hosted execution, scans, runtime pinning, environment isolation, and deployed secrets/config remain unverified.                                                                                                                                                                     |
+| Delivery (PR-17)                  | Docker migration packaging/startup updated but image unverified. Coordinated migration rollout, enforced merge/deploy gates, and rollback rehearsal remain.                                                                                                                                    |
+| Observability/audit (PR-18)       | JSON logs, request IDs, optional sanitized Sentry events, and transactional database history implemented/tested. Live delivery/alerts, uptime checks, actor/request attribution, restricted database roles, and retention remain.                                                              |
+| Recovery (PR-19)                  | Encrypted logical backups and guarded empty-target recovery tested on disposable PostgreSQL 16. Neon history window, production exports/storage/schedule, full application recovery, RPO/RTO, and operational ownership remain unverified or undecided.                                        |
+| Operations/governance (PR-20/21)  | Planned: name the responder and release decision maker; document incident and payment-repair procedures. No risks have been accepted on the owner's behalf.                                                                                                                                    |
+| Maintenance (PR-22)               | Planned: dependency updates, vulnerability triage, access reviews, and recurring restore checks.                                                                                                                                                                                               |
+| Financial assurance (PR-23)       | Required: reconciliation, settlement ownership, refunds/disputes, and immutable financial history appropriate to the supported product scope.                                                                                                                                                  |
 
 The repository maintainer needs to assign operational ownership and service
 targets before release. Work order: invoice/data invariants, identity/security,
