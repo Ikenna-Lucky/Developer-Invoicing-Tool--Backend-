@@ -16,7 +16,8 @@ concurrency:
 jobs:
   checks:
     name: Typecheck and smoke checks
-    runs-on: ubuntu-latest
+    # Ubuntu 24.04 supplies the PostgreSQL 16 recovery tools used below.
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     services:
       postgres:
@@ -90,7 +91,7 @@ jobs:
   docker:
     name: Docker build
     needs: checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
