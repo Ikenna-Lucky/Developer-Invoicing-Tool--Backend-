@@ -228,7 +228,9 @@ test("audit insertion failure rolls back the business mutation", async () => {
         .set({ fullName: "changed" })
         .where(eq(schema.users.id, ownerId))
         .execute(),
-    ).rejects.toThrow("injected audit failure");
+    ).rejects.toMatchObject({
+      cause: { message: expect.stringContaining("injected audit failure") },
+    });
     expect(
       (
         await database.query.users.findFirst({

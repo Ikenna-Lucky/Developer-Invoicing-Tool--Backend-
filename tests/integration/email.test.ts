@@ -263,7 +263,9 @@ test("queue insertion failure rolls registration and its token back", async () =
         fullName: "Rollback",
         password,
       }),
-    ).rejects.toThrow("injected enqueue failure");
+    ).rejects.toMatchObject({
+      cause: { message: expect.stringContaining("injected enqueue failure") },
+    });
     expect(await database.query.users.findMany()).toHaveLength(0);
     expect(
       await database.query.emailVerificationTokens.findMany(),
@@ -357,7 +359,9 @@ test("an acknowledgement failure can retry safely after provider acceptance", as
         keys.push(key);
         return accepted();
       }),
-    ).rejects.toThrow("injected ack failure");
+    ).rejects.toMatchObject({
+      cause: { message: expect.stringContaining("injected ack failure") },
+    });
   } finally {
     await client.unsafe(
       "DROP TRIGGER fail_ack ON email_jobs; DROP FUNCTION fail_email_ack()",

@@ -457,6 +457,37 @@ operator verification. No repository ruleset or Render setting was changed. Thes
 checks do not themselves prevent a separately configured deployment, prove absence
 of secrets outside scanned history, or establish complete security coverage.
 
+## Dependency advisory remediation — 23 November 2026
+
+PR-15/22: original lockfile findings remediated and verified locally. Full Bun
+1.4.5 audit now returns exit 0 with no known vulnerabilities across 117 packages,
+including lower severities. No audit exclusions or gate relaxations were used.
+Hono, Zod/validator, Drizzle ORM/Kit, and Puppeteer were upgraded to patched exact
+versions. An explicit esbuild 0.28.2 compatibility override also removes the old
+moderate development-server advisory from Drizzle's legacy loader chain. Actual
+loader resolution, synchronous CJS/asynchronous ESM transforms, and schema
+configuration loading/generation were verified. Revisit the override when the
+upstream legacy dependency is removed. See [security checks](security-checks.md).
+
+Zod's transformed pagination default is numeric but still 25. Eleven database
+error assertions now inspect the exact PostgreSQL cause exposed by newer Drizzle;
+rollback and concurrency assertions were retained. One raw SQL fixture serializes
+JSON explicitly. Drizzle Kit upgraded snapshot metadata to version 7. Latest
+metadata was aligned with the already-existing counter check and partial-index
+predicates; applied migration SQL, journal entries, and snapshot identities were
+preserved. Generation reports no schema changes, so no new SQL migration is needed.
+Historical journal timestamp warnings remain covered by corrective migration 0004
+and legacy migration tests; their applied history was not rewritten.
+
+TypeScript, frozen installation with no lockfile change, 54 unit/runtime tests
+(285 assertions, existing Windows POSIX-signal skip), 118 integration tests on
+isolated PostgreSQL 17 (678 assertions), and seven real Chrome tests (33 assertions)
+passed. First integration execution identified wrapped-error assertion mismatches
+and raw JSON fixture serialization; the corrected full suite passed. Production
+providers were disabled/stubbed. PostgreSQL 16/Linux CI, Render/Neon rollout, real
+provider behavior, and Grype's built-image findings still need verification. A
+clean dependency audit does not prove a clean OS image or complete security.
+
 ## Remaining controls
 
 | Area                              | Status and next work                                                                                                                                                                                                                                                                           |
@@ -473,7 +504,7 @@ of secrets outside scanned history, or establish complete security coverage.
 | Tests (PR-11)                     | Financial, invoice isolation, session, and migration regressions passed. Real PDF security tests passed; live OAuth, provider sandboxes, and assembled frontend/API journeys remain.                                                                                                           |
 | UX/contracts (PR-12)              | Frontend pagination controls/selectors/totals must be updated before the paginated contract is deployed to affected users. Edit/delete affordances and client-deletion copy need updates for the 409 responses. Browser flows, session expiry, and accessible recovery remain unverified.      |
 | Performance/resilience (PR-13/14) | PDF concurrency/deadline/size limits implemented and tested; cursor pagination and list indexes implemented/tested. Shutdown and readiness have local test evidence; hosted draining, workload targets, and recovery targets remain unverified.                                                |
-| Builds/infrastructure (PR-15/16)  | CI security gates implemented; dependency audit currently fails with 16 high advisories. Hosted image scan, runtime pinning, environment isolation, and deployed configuration remain unverified.                                                                                              |
+| Builds/infrastructure (PR-15/16)  | CI security gates implemented; patched lockfile passes the full dependency audit locally. Hosted image scan, runtime pinning, environment isolation, and deployed configuration remain unverified.                                                                                             |
 | Delivery (PR-17)                  | Docker migration packaging/startup updated but image unverified. Coordinated migration rollout, enforced merge/deploy gates, and rollback rehearsal remain.                                                                                                                                    |
 | Observability/audit (PR-18)       | JSON logs, request IDs, optional sanitized Sentry events, and transactional database history implemented/tested. Live delivery/alerts, uptime checks, actor/request attribution, restricted database roles, and retention remain.                                                              |
 | Recovery (PR-19)                  | Encrypted logical backups and guarded empty-target recovery tested on disposable PostgreSQL 16. Neon history window, production exports/storage/schedule, full application recovery, RPO/RTO, and operational ownership remain unverified or undecided.                                        |

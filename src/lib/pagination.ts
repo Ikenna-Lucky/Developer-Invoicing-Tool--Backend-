@@ -26,7 +26,7 @@ const querySchema = z
       .regex(/^[1-9]\d{0,2}$/)
       .transform(Number)
       .refine((n) => n <= 100)
-      .default("25"),
+      .default(25),
     cursor: z.string().max(256).optional(),
     search: z.string().trim().max(100).optional(),
     status: z.enum(["draft", "sent", "paid", "overdue"]).optional(),

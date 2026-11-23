@@ -260,7 +260,7 @@ test("snapshot capture cannot be supplied on drafts or rewritten after issue thr
   expect(issued?.identitySnapshot?.source).toBe("issued");
   for (const replacement of [null, {}]) {
     await expect(
-      client`UPDATE invoices SET identity_snapshot = ${replacement === null ? null : client.json(replacement)} WHERE id = ${account.invoice.id}`,
+      client`UPDATE invoices SET identity_snapshot = ${replacement === null ? null : JSON.stringify(replacement)}::jsonb WHERE id = ${account.invoice.id}`,
     ).rejects.toThrow("identity cannot be changed");
   }
   const another = await fixture();
@@ -373,7 +373,9 @@ test("a failed invoice insert rolls its counter back", async () => {
         ...input(clientId),
         items: [{ description: "force-failure", quantity: 1, rate: 10 }],
       }),
-    ).rejects.toThrow("injected item failure");
+    ).rejects.toMatchObject({
+      cause: { message: expect.stringContaining("injected item failure") },
+    });
   } finally {
     await client.unsafe("DROP TRIGGER test_item_failure ON invoice_items");
     await client.unsafe("DROP FUNCTION reject_test_item()");

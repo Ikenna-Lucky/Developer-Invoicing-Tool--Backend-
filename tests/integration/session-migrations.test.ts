@@ -74,7 +74,11 @@ test("migration retains the latest reset token and enforces one token per accoun
         expiresAt: new Date("2099-01-01"),
       })
       .execute(),
-  ).rejects.toThrow("password_reset_tokens_user_id_unique");
+  ).rejects.toMatchObject({
+    cause: {
+      message: expect.stringContaining("password_reset_tokens_user_id_unique"),
+    },
+  });
 });
 
 test("only one active refresh token can exist per session while revoked history is retained", async () => {
@@ -104,7 +108,11 @@ test("only one active refresh token can exist per session while revoked history 
         expiresAt: new Date("2099-01-01"),
       })
       .execute(),
-  ).rejects.toThrow("refresh_tokens_active_session_unique");
+  ).rejects.toMatchObject({
+    cause: {
+      message: expect.stringContaining("refresh_tokens_active_session_unique"),
+    },
+  });
   await database
     .update(refreshTokens)
     .set({ revoked: true })

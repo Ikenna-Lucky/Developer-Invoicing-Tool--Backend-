@@ -235,7 +235,9 @@ test("offline insert rolls back when the paid status update fails", async () => 
   try {
     await expect(
       recordOfflinePayment(database, userId, invoiceId, key, offline),
-    ).rejects.toThrow("injected update failure");
+    ).rejects.toMatchObject({
+      cause: { message: expect.stringContaining("injected update failure") },
+    });
     expect((await saved(invoiceId)).payments).toHaveLength(0);
   } finally {
     await client.unsafe(
@@ -392,8 +394,10 @@ test("rolls back the inserted payment if the invoice update fails", async () => 
     "CREATE TRIGGER test_reject_paid BEFORE UPDATE ON invoices FOR EACH ROW EXECUTE FUNCTION reject_paid_update()",
   );
   try {
-    await expect(recordPaystackPayment(database, charge)).rejects.toThrow(
-      "injected update failure",
+    await expect(recordPaystackPayment(database, charge)).rejects.toMatchObject(
+      {
+        cause: { message: expect.stringContaining("injected update failure") },
+      },
     );
     const result = await saved(invoiceId);
     expect(result.invoice?.status).toBe("sent");

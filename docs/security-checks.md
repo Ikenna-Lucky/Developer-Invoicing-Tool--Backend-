@@ -30,15 +30,53 @@ is needed. There is no blanket exclusion for tests or `.env` files. Inline
 do not add broad exclusions to obtain a green result. The scan covers Git history,
 not an operator's untracked local `.env` or secrets stored outside the repository.
 
-## Current findings — 23 November 2026
+## Dependency remediation — 23 November 2026
 
-The local Bun 1.4.5 audit found **16 high-severity advisories**. Consequently the
-new dependency gate is expected to fail on the current lockfile. Affected packages
-include direct dependencies `drizzle-orm`, `hono`, and `zod`, plus transitive
+The upgraded lockfile passes the **full Bun audit with no known vulnerabilities**
+across 117 audited packages (exit 0), without advisory exclusions or a lowered
+severity threshold. The original 16 high findings and one moderate tooling finding
+are no longer reported. This is time-bound advisory evidence, not a guarantee
+against future disclosures or a clean Docker-image result.
+
+Patched direct versions are Hono 4.13.21, Zod 4.6.7, its Hono validator 0.9.1,
+Drizzle ORM 0.45.4, Drizzle Kit 0.31.11, and Puppeteer 25.18.1. An esbuild 0.28.2
+override replaces the older vulnerable copy required by the deprecated
+`@esbuild-kit/core-utils` tooling chain. Its actual caller resolves 0.28.2;
+synchronous CJS and asynchronous ESM TypeScript transforms were exercised under
+Node 24.12.0, and Drizzle's schema generation passed. Remove/review the override
+when Drizzle drops the legacy loader. It is a compatibility override, not an
+advisory suppression.
+
+Zod's pagination default now uses its numeric output type while retaining 25
+items. Tests assert PostgreSQL messages inside Drizzle's new error `cause` while
+retaining rollback/constraint checks. A raw SQL JSON test explicitly serializes
+its parameter to match the upgraded driver integration. Database errors can carry
+query parameters; existing production logging/monitoring sanitization remains in
+place.
+
+Drizzle snapshots were upgraded from format 6 to 7 using `drizzle-kit up`. The
+latest snapshot now includes the existing invoice-counter check and partial-index
+predicates that older metadata omitted. Snapshot IDs/chains are preserved. Schema
+generation reports no changes. Applied SQL migrations and journal entries were
+not changed, and no new database migration is required. The check command still
+warns about the historical timestamps of migrations 0001–0003; corrective migration
+0004 and the legacy-upgrade tests remain in place. Do not rewrite applied history.
+
+TypeScript, a frozen-lockfile install, 54 unit/runtime tests (one existing Windows
+signal skip), 118 PostgreSQL integration tests (678 assertions), and seven real
+Chrome PDF tests (33 assertions) passed locally. Database tests used PostgreSQL 17
+with matching recovery tools; providers were stubbed. Linux/PostgreSQL 16 CI,
+Render/Neon deployment, and the built-image vulnerability scan remain unverified.
+
+## Initial findings and scanner verification
+
+The initial Bun 1.4.5 audit found **16 high-severity advisories**, which blocked the
+dependency gate before the upgrades above. Affected packages included direct
+dependencies `drizzle-orm`, `hono`, and `zod`, plus transitive
 `basic-ftp`, `brace-expansion`, `extract-zip`, `ip-address`, `js-yaml`, and `ws`.
-No dependency versions or advisory exceptions were changed in this build.
+No advisory exceptions were added for these findings.
 
-These findings require upgrade planning and regression verification, including
+Remediation required upgrade planning and regression verification, including
 compatibility across Drizzle/migrations, Zod/validation, and Puppeteer/PDF security.
 Scanner findings alone do not establish that every advisory is exploitable in
 Billd. Review each advisory and dependency path. Prefer compatible patched

@@ -203,9 +203,11 @@ test("failed replacement insertion rolls refresh revocation back", async () => {
     "CREATE TRIGGER test_refresh_failure BEFORE INSERT ON refresh_tokens FOR EACH ROW EXECUTE FUNCTION reject_refresh_insert()",
   );
   try {
-    await expect(rotateSession(database, session.refreshToken)).rejects.toThrow(
-      "injected refresh failure",
-    );
+    await expect(
+      rotateSession(database, session.refreshToken),
+    ).rejects.toMatchObject({
+      cause: { message: expect.stringContaining("injected refresh failure") },
+    });
     expect(
       (
         await database.query.refreshTokens.findFirst({
@@ -360,7 +362,9 @@ test("reset failure rolls back the password, token consumption, and session remo
   try {
     await expect(
       resetPassword(database, reset.rawToken, "Replacement password"),
-    ).rejects.toThrow("injected reset failure");
+    ).rejects.toMatchObject({
+      cause: { message: expect.stringContaining("injected reset failure") },
+    });
     const saved = (await database.query.users.findFirst({
       where: eq(users.id, user.id),
     }))!;
@@ -438,7 +442,11 @@ test("registration rolls back the account when session persistence fails", async
         fullName: "Test User",
         password,
       }),
-    ).rejects.toThrow("injected registration failure");
+    ).rejects.toMatchObject({
+      cause: {
+        message: expect.stringContaining("injected registration failure"),
+      },
+    });
     expect(
       await database.query.users.findFirst({ where: eq(users.email, email) }),
     ).toBe(undefined);
