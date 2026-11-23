@@ -1,3 +1,4 @@
+import "../src/configuration";
 import "../src/instrumentation";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { fileURLToPath } from "node:url";

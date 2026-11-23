@@ -21,6 +21,8 @@ import {
 } from "../lib/sessions";
 import { createAuthMiddleware } from "../middleware/auth";
 import type { Variables } from "../types";
+import { frontendOrigin } from "../middleware/csrf";
+import { applicationOrigin } from "../lib/configuration";
 
 export function createAuthRouter(
   database: DB = defaultDb,
@@ -230,7 +232,11 @@ export function createAuthRouter(
       );
     }
 
-    const apiUrl = process.env.API_URL ?? "http://localhost:3001";
+    const apiUrl = applicationOrigin(
+      "API_URL",
+      process.env.API_URL ?? "http://localhost:3001",
+      IS_PROD,
+    );
     const redirectUri = `${apiUrl}/auth/google/callback`;
 
     // random state, stashed in a short-lived cookie so we can verify it in the
@@ -267,8 +273,12 @@ export function createAuthRouter(
     const storedState = getCookie(c, "oauth_state");
     deleteCookie(c, "oauth_state", { path: "/" });
 
-    const frontendUrl = process.env.FRONTEND_URL ?? "http://localhost:3000";
-    const apiUrl = process.env.API_URL ?? "http://localhost:3001";
+    const frontendUrl = frontendOrigin();
+    const apiUrl = applicationOrigin(
+      "API_URL",
+      process.env.API_URL ?? "http://localhost:3001",
+      IS_PROD,
+    );
     const redirectUri = `${apiUrl}/auth/google/callback`;
 
     // validation

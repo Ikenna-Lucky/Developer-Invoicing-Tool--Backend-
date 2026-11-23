@@ -1,22 +1,14 @@
 import { createMiddleware } from "hono/factory";
+import { applicationOrigin } from "../lib/configuration";
 
 export function frontendOrigin(
   value = process.env.FRONTEND_URL ?? "http://localhost:3000",
 ) {
-  const url = new URL(value);
-  if (
-    !["http:", "https:"].includes(url.protocol) ||
-    url.username ||
-    url.password ||
-    url.pathname !== "/" ||
-    url.search ||
-    url.hash
-  ) {
-    throw new Error(
-      "FRONTEND_URL must be an HTTP(S) origin without a path, credentials, query, or fragment",
-    );
-  }
-  return url.origin;
+  return applicationOrigin(
+    "FRONTEND_URL",
+    value,
+    process.env.NODE_ENV === "production",
+  );
 }
 
 export function createCsrfProtection(origin = frontendOrigin()) {

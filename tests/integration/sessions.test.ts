@@ -66,6 +66,62 @@ function request(
   });
 }
 
+test("production auth keeps secure cookies and canonical OAuth redirect origins", async () => {
+  const { user } = await account();
+  const names = [
+    "NODE_ENV",
+    "FRONTEND_URL",
+    "API_URL",
+    "GOOGLE_CLIENT_ID",
+    "GOOGLE_CLIENT_SECRET",
+  ] as const;
+  const previous = Object.fromEntries(
+    names.map((name) => [name, process.env[name]]),
+  );
+  try {
+    Object.assign(process.env, {
+      NODE_ENV: "production",
+      FRONTEND_URL: "https://app.example.test/",
+      API_URL: "https://api.example.test/",
+      GOOGLE_CLIENT_ID: "test-client",
+      GOOGLE_CLIENT_SECRET: "test-secret",
+    });
+    const { createAuthRouter } = await import("../../src/routes/auth");
+    const production = createAuthRouter(database);
+    const login = await production.request("/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: user.email, password }),
+    });
+    expect(login.status).toBe(200);
+    expect(login.headers.getSetCookie()).toHaveLength(2);
+    for (const cookie of login.headers.getSetCookie()) {
+      expect(cookie).toContain("HttpOnly");
+      expect(cookie).toContain("Secure");
+      expect(cookie).toContain("SameSite=None");
+    }
+    const google = await production.request("/google");
+    expect(google.status).toBe(302);
+    const redirect = new URL(google.headers.get("Location")!);
+    expect(redirect.searchParams.get("redirect_uri")).toBe(
+      "https://api.example.test/auth/google/callback",
+    );
+    expect(google.headers.get("Set-Cookie")).toContain("Secure");
+    expect(google.headers.get("Set-Cookie")).toContain("SameSite=Lax");
+    const cancelled = await production.request(
+      "/google/callback?error=access_denied",
+    );
+    expect(cancelled.headers.get("Location")).toBe(
+      "https://app.example.test/sign-in?error=google_denied",
+    );
+  } finally {
+    for (const name of names) {
+      if (previous[name] === undefined) delete process.env[name];
+      else process.env[name] = previous[name];
+    }
+  }
+});
+
 test("concurrent logins create distinct sessions without token hash collisions", async () => {
   const { user } = await account();
   const logins = await Promise.all(

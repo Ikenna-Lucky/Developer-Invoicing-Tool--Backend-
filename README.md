@@ -385,3 +385,7 @@ configuration, timeout behavior, and verification limits.
 Issued invoices preserve business and client identity for future PDFs and emails.
 See [invoice identity snapshots](docs/invoice-identity.md) for legacy backfill,
 resend recipients, and migration behavior.
+
+Backend startup validates settings before migrations and listening. See
+[configuration](docs/configuration.md) for production URLs, provider settings,
+secret checks, and the remaining Render proxy verification.

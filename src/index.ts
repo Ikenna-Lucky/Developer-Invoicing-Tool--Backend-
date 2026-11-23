@@ -1,16 +1,16 @@
+import { configuration } from "./configuration";
 import { flushMonitoring } from "./instrumentation";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logEvent, reportError, requestLogging } from "./lib/observability";
 import { prettyJSON } from "hono/pretty-json";
 import { HTTPException } from "hono/http-exception";
-import { validateAuthConfiguration } from "./lib/jwt";
 import { db, closeDatabase } from "./db";
 import { createDatabaseReadiness } from "./db/readiness";
 import { createShutdown } from "./lib/shutdown";
 import { generateInvoicePDF } from "./lib/pdf";
-import { emailQueueKey, startEmailWorker } from "./lib/email-queue";
-import { createCsrfProtection, frontendOrigin } from "./middleware/csrf";
+import { startEmailWorker } from "./lib/email-queue";
+import { createCsrfProtection } from "./middleware/csrf";
 import { createRequestLimits } from "./middleware/request-limits";
 import { createAuthRateLimit } from "./middleware/rate-limit";
 
@@ -20,14 +20,13 @@ import clients from "./routes/clients";
 import invoices from "./routes/invoices";
 import webhooks from "./routes/webhooks";
 
-validateAuthConfiguration();
 const app = new Hono();
 app.use("*", requestLogging());
 
 app.use(
   "*",
   cors({
-    origin: frontendOrigin(),
+    origin: configuration.frontend,
     allowHeaders: ["Content-Type", "Authorization", "Idempotency-Key"],
     allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     credentials: true,
@@ -46,7 +45,7 @@ app.use("*", async (c, next) => {
   await next();
 });
 app.use("*", prettyJSON());
-app.use("*", createCsrfProtection());
+app.use("*", createCsrfProtection(configuration.frontend));
 app.use("*", createRequestLimits());
 app.use("*", createAuthRateLimit(db));
 
@@ -81,15 +80,11 @@ app.notFound((c) => {
   return c.json({ error: "Route not found" }, 404);
 });
 
-const port = parseInt(process.env.PORT ?? "3001");
-if (
-  process.env.NODE_ENV === "production" ||
-  process.env.EMAIL_QUEUE_ENCRYPTION_KEY
-)
-  emailQueueKey();
-if (process.env.NODE_ENV === "production" && !process.env.RESEND_API_KEY)
-  throw new Error("RESEND_API_KEY is required in production");
-const server = Bun.serve({ port, idleTimeout: 30, fetch: app.fetch });
+const server = Bun.serve({
+  port: configuration.port,
+  idleTimeout: 30,
+  fetch: app.fetch,
+});
 let stopEmailWorker: () => Promise<void> = async () => {};
 if (
   process.env.NODE_ENV !== "test" &&

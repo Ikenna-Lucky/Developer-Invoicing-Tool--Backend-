@@ -12,9 +12,12 @@ export interface JWTPayload {
   sessionVersion: number;
 }
 
-function secret(name: "JWT_ACCESS_SECRET" | "JWT_REFRESH_SECRET") {
-  const value = process.env[name];
-  if (!value || Buffer.byteLength(value, "utf8") < 32) {
+function secret(
+  name: "JWT_ACCESS_SECRET" | "JWT_REFRESH_SECRET",
+  env: NodeJS.ProcessEnv = process.env,
+) {
+  const value = env[name];
+  if (!value || !value.trim() || Buffer.byteLength(value, "utf8") < 32) {
     throw new Error(`${name} must contain at least 32 bytes`);
   }
   return new TextEncoder().encode(value);
@@ -35,14 +38,26 @@ export function tokenExpiryDate(duration: string): Date {
   return new Date((Math.floor(Date.now() / 1000) + seconds) * 1000);
 }
 
-export function validateAuthConfiguration() {
-  secret("JWT_ACCESS_SECRET");
-  secret("JWT_REFRESH_SECRET");
-  if (process.env.JWT_ACCESS_SECRET === process.env.JWT_REFRESH_SECRET) {
+export function validateAuthConfiguration(
+  env: NodeJS.ProcessEnv = process.env,
+) {
+  secret("JWT_ACCESS_SECRET", env);
+  secret("JWT_REFRESH_SECRET", env);
+  if (env.JWT_ACCESS_SECRET === env.JWT_REFRESH_SECRET) {
     throw new Error("Access and refresh tokens must use different secrets");
   }
-  tokenExpiryDate(process.env.JWT_ACCESS_EXPIRES_IN ?? "15m");
-  tokenExpiryDate(process.env.JWT_REFRESH_EXPIRES_IN ?? "7d");
+  for (const [name, fallback] of [
+    ["JWT_ACCESS_EXPIRES_IN", "15m"],
+    ["JWT_REFRESH_EXPIRES_IN", "7d"],
+  ] as const) {
+    try {
+      tokenExpiryDate(env[name] ?? fallback);
+    } catch (error) {
+      throw new Error(
+        `${name}: ${error instanceof Error ? error.message : "Invalid token lifetime"}`,
+      );
+    }
+  }
 }
 
 function token(

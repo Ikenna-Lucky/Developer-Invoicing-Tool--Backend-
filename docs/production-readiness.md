@@ -391,6 +391,39 @@ payment fixture copying an issued snapshot into a draft; the fixture now clears
 it and the full rerun passed. Render/Neon rollout, PostgreSQL 16/Linux CI, live
 provider behavior, migration timing at production volume, and frontend invoice
 views remain unverified. Document identity is frozen, not a byte-identical PDF.
+## Startup configuration validation — 23 November 2026
+
+PR-07/15/16: confirmed gaps addressed with local verification. Both server entry
+points validate before the listener; the migration entry validates before database
+migrations and monitoring initialization. Existing JWT/key/proxy parsers are reused.
+Production requires explicit HTTPS frontend/API origins; strict port/mode/database
+URL checks, paired optional OAuth credentials, sender syntax, provider whitespace,
+and optional DSN shape checks reject invalid configuration with safe explanations.
+OAuth redirect construction canonicalizes trailing slashes. Cookie behavior is
+preserved and tested rather than redesigned. Resend's default sender remains
+allowed. No provider keys, environment values, or deployment settings were read
+from Render or changed. See [configuration](configuration.md) for rollout rules.
+
+TypeScript and 54 unit/runtime tests passed (285 assertions, one existing Windows
+POSIX-signal skip). Actual Bun subprocess checks exercise rejection by both entry
+points without printing supplied secrets or reaching an unavailable database.
+The full 117-test database regression suite passed on isolated PostgreSQL 17
+with matching recovery tools. After adding production-mode cookie/OAuth coverage
+and final parser edge cases, 32 focused session/request-security checks passed
+(192 assertions), including HttpOnly/Secure/SameSite flags, exact callback paths,
+CSRF, right-counted proxy selection, and rate limits. Unit/type checks were then
+rerun successfully after improving JWT expiry error context. Providers are
+stubbed; production credentials, browser delivery, hosted CI, and Render's real
+ingress chain remain unverified. PDF behavior was unchanged and its browser suite
+was not rerun for this build.
+
+NODE_ENV must be explicitly production on Render; missing mode intentionally
+retains local development behavior. No proxy count was guessed: the existing
+safe default ignores forwarded headers but may group users behind a proxy.
+Verify the actual chain and ingress restrictions before choosing a positive hop
+count. Configuration syntax checks do not prove secret entropy, provider access,
+TLS certificate policy, DNS ownership, or deployment correctness. No migration,
+frontend change, or production deployment was performed.
 ## Remaining controls
 
 | Area                              | Status and next work                                                                                                                                                                                                                                                                           |
@@ -400,7 +433,7 @@ views remain unverified. Document identity is frozen, not a byte-identical PDF.
 | Threats (PR-03)                   | Planned: document abuse and failure cases across authentication, payments, PDFs, and external services.                                                                                                                                                                                        |
 | Identity and sessions (PR-04/05)  | Atomic reset/refresh, unique tokens, consistent deadlines, and server-side revocation implemented and tested. Shared IP/account rate limits are tested. Email verification and account gates are tested. Deployed proxy validation, replay escalation policy, and browser verification remain. |
 | Ownership (PR-06)                 | Cross-user invoice read/edit/send/delete and client selection tests passed. Wider auth/client workflows remain. Team roles are outside the current individual-user model.                                                                                                                      |
-| API security (PR-07)              | Exact origin CSRF checks and bounded authentication bodies implemented/tested. PDF escaping, network denial, logo validation, and render limits are tested. Wider request limits and configuration checks remain.                                                                              |
+| API security (PR-07)              | Exact origin CSRF checks and bounded authentication bodies implemented/tested. PDF escaping, network denial, logo validation, and render limits are tested. Request limits and startup configuration validation are implemented/tested; deployed proxy and browser checks remain.                                                                              |
 | Privacy and retention (PR-08)     | Allowlisted operational logs and outgoing monitoring events implemented/tested. Account export/deletion and retention rules remain.                                                                                                                                                            |
 | Data correctness (PR-09)          | Payment, numbering, rounding, deletion, and forward migration tests passed natively. Offline payment history and reference-based reconciliation are implemented/tested. Issued identity snapshots are implemented/tested. Historical financial/identity repair remains.                                                                       |
 | Integrations/jobs (PR-10)         | Durable encrypted email jobs, provider acceptance state, retries, and timeouts are tested locally. Owner-triggered payment reconciliation is implemented/tested. Hosted workers, live delivery, backpressure, and scheduled reconciliation remain.                                             |

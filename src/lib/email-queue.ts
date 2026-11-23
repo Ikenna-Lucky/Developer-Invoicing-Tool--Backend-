@@ -16,8 +16,9 @@ import { deliverMail, type MailMessage } from "./email";
 
 type Writer = Pick<DB, "insert" | "update">;
 
-export function emailQueueKey() {
-  const key = process.env.EMAIL_QUEUE_ENCRYPTION_KEY ?? "";
+export function emailQueueKey(
+  key = process.env.EMAIL_QUEUE_ENCRYPTION_KEY ?? "",
+) {
   if (!/^[a-fA-F0-9]{64}$/.test(key))
     throw new Error(
       "EMAIL_QUEUE_ENCRYPTION_KEY must be 64 hexadecimal characters",
