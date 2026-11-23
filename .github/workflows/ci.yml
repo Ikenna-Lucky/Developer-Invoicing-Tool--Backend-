@@ -14,6 +14,54 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  dependencies:
+    name: Dependency security audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.5"
+      - name: Audit all locked dependencies, including development tools
+        run: bun audit --audit-level=high
+
+  secrets:
+    name: Git history secret scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install checksum-verified Gitleaks
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl --fail --silent --show-error --location --retry 3 \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
+            --output gitleaks.tar.gz
+          echo '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks.tar.gz' | sha256sum --check --strict
+          mkdir -p security-bin
+          tar -xzf gitleaks.tar.gz -C security-bin gitleaks
+          echo "$RUNNER_TEMP/security-bin" >> "$GITHUB_PATH"
+      - name: Scan all fetched Git history with secret values redacted
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/gitleaksignore" <<'EOF'
+          # Historical documentation placeholder, not an issued encryption key.
+          4b494532b25b0c4c6e56f8ff0601bd855751d1b5:.env.example:generic-api-key:26
+          # Deterministic synthetic encryption key used only in configuration tests.
+          3158d7daae76ba8b8650c1f385e98d3851a17ad2:tests/configuration.test.ts:generic-api-key:21
+          EOF
+          gitleaks git --log-opts="--all" --redact=100 --ignore-gitleaks-allow \
+            --gitleaks-ignore-path "$RUNNER_TEMP/gitleaksignore" --exit-code=1 --no-banner .
+
   checks:
     name: Typecheck and smoke checks
     # Ubuntu 24.04 supplies the PostgreSQL 16 recovery tools used below.
@@ -99,3 +147,20 @@ jobs:
           persist-credentials: false
       - name: Build the deployment image
         run: docker build --tag billd-api:ci .
+      - name: Install checksum-verified Grype
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl --fail --silent --show-error --location --retry 3 \
+            https://github.com/anchore/grype/releases/download/v0.122.1/grype_0.122.1_linux_amd64.tar.gz \
+            --output grype.tar.gz
+          echo 'f1ba7e2917ee1395618de20a98da0aa7c0fb1788927797651047c50502a37538  grype.tar.gz' | sha256sum --check --strict
+          mkdir -p security-bin
+          tar -xzf grype.tar.gz -C security-bin grype
+          echo "$RUNNER_TEMP/security-bin" >> "$GITHUB_PATH"
+      - name: Scan the built image for high and critical vulnerabilities
+        env:
+          GRYPE_CHECK_FOR_APP_UPDATE: "false"
+          GRYPE_DB_VALIDATE_AGE: "true"
+        run: grype docker:billd-api:ci --fail-on high --output table

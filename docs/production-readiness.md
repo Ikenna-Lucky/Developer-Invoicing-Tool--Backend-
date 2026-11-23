@@ -391,6 +391,7 @@ payment fixture copying an issued snapshot into a draft; the fixture now clears
 it and the full rerun passed. Render/Neon rollout, PostgreSQL 16/Linux CI, live
 provider behavior, migration timing at production volume, and frontend invoice
 views remain unverified. Document identity is frozen, not a byte-identical PDF.
+
 ## Startup configuration validation — 23 November 2026
 
 PR-07/15/16: confirmed gaps addressed with local verification. Both server entry
@@ -424,6 +425,38 @@ Verify the actual chain and ingress restrictions before choosing a positive hop
 count. Configuration syntax checks do not prove secret entropy, provider access,
 TLS certificate policy, DNS ownership, or deployment correctness. No migration,
 frontend change, or production deployment was performed.
+
+## CI dependency, secret, and image gates — 23 November 2026
+
+PR-15/22: security checks implemented; dependency gate currently failed on known
+findings. CI audits the full Bun lockfile at high/critical, scans full fetched Git
+history with redacted Gitleaks, and scans the built image with Grype at high or
+above, including unfixed findings. Scanner versions and release-archive checksums
+are pinned. Jobs retain read-only repository permissions and no deployment secrets.
+The existing Docker build check name is preserved for required-status compatibility.
+See [security checks](security-checks.md) for findings and enforcement instructions.
+
+Local Bun 1.4.5 audit returned exit 1 with 16 high advisories affecting direct
+Drizzle ORM, Hono, and Zod dependencies and several transitive packages. No upgrades,
+vulnerability suppressions, or risk acceptance were applied. This is a release
+blocker requiring dependency remediation and regression evidence, not proof that
+every advisory is reachable through current application routes.
+
+Gitleaks 8.30.1 was checksum-verified and scanned 46 commits. Two exact historical
+findings were verified as the documentation encryption-key placeholder and a
+synthetic test key; their fingerprints alone are excluded. The repeated history
+scan returned zero. A new synthetic token still returned exit 1. Grype 0.122.1's
+Windows archive checksum, version, image-target syntax, failure threshold, and
+DB-age configuration were verified. Workflow YAML and every shell block passed
+syntax checks. Docker was unavailable, so the actual built-image scan and hosted
+Linux workflow remain unverified. No clean image result is claimed. Runtime code
+was unchanged; application regression tests were not rerun for this build.
+
+GitHub required checks and Render's wait-for-CI deployment policy still need
+operator verification. No repository ruleset or Render setting was changed. These
+checks do not themselves prevent a separately configured deployment, prove absence
+of secrets outside scanned history, or establish complete security coverage.
+
 ## Remaining controls
 
 | Area                              | Status and next work                                                                                                                                                                                                                                                                           |
@@ -433,14 +466,14 @@ frontend change, or production deployment was performed.
 | Threats (PR-03)                   | Planned: document abuse and failure cases across authentication, payments, PDFs, and external services.                                                                                                                                                                                        |
 | Identity and sessions (PR-04/05)  | Atomic reset/refresh, unique tokens, consistent deadlines, and server-side revocation implemented and tested. Shared IP/account rate limits are tested. Email verification and account gates are tested. Deployed proxy validation, replay escalation policy, and browser verification remain. |
 | Ownership (PR-06)                 | Cross-user invoice read/edit/send/delete and client selection tests passed. Wider auth/client workflows remain. Team roles are outside the current individual-user model.                                                                                                                      |
-| API security (PR-07)              | Exact origin CSRF checks and bounded authentication bodies implemented/tested. PDF escaping, network denial, logo validation, and render limits are tested. Request limits and startup configuration validation are implemented/tested; deployed proxy and browser checks remain.                                                                              |
+| API security (PR-07)              | Exact origin CSRF checks and bounded authentication bodies implemented/tested. PDF escaping, network denial, logo validation, and render limits are tested. Request limits and startup configuration validation are implemented/tested; deployed proxy and browser checks remain.              |
 | Privacy and retention (PR-08)     | Allowlisted operational logs and outgoing monitoring events implemented/tested. Account export/deletion and retention rules remain.                                                                                                                                                            |
-| Data correctness (PR-09)          | Payment, numbering, rounding, deletion, and forward migration tests passed natively. Offline payment history and reference-based reconciliation are implemented/tested. Issued identity snapshots are implemented/tested. Historical financial/identity repair remains.                                                                       |
+| Data correctness (PR-09)          | Payment, numbering, rounding, deletion, and forward migration tests passed natively. Offline payment history and reference-based reconciliation are implemented/tested. Issued identity snapshots are implemented/tested. Historical financial/identity repair remains.                        |
 | Integrations/jobs (PR-10)         | Durable encrypted email jobs, provider acceptance state, retries, and timeouts are tested locally. Owner-triggered payment reconciliation is implemented/tested. Hosted workers, live delivery, backpressure, and scheduled reconciliation remain.                                             |
 | Tests (PR-11)                     | Financial, invoice isolation, session, and migration regressions passed. Real PDF security tests passed; live OAuth, provider sandboxes, and assembled frontend/API journeys remain.                                                                                                           |
 | UX/contracts (PR-12)              | Frontend pagination controls/selectors/totals must be updated before the paginated contract is deployed to affected users. Edit/delete affordances and client-deletion copy need updates for the 409 responses. Browser flows, session expiry, and accessible recovery remain unverified.      |
 | Performance/resilience (PR-13/14) | PDF concurrency/deadline/size limits implemented and tested; cursor pagination and list indexes implemented/tested. Shutdown and readiness have local test evidence; hosted draining, workload targets, and recovery targets remain unverified.                                                |
-| Builds/infrastructure (PR-15/16)  | CI exists; hosted execution, scans, runtime pinning, environment isolation, and deployed secrets/config remain unverified.                                                                                                                                                                     |
+| Builds/infrastructure (PR-15/16)  | CI security gates implemented; dependency audit currently fails with 16 high advisories. Hosted image scan, runtime pinning, environment isolation, and deployed configuration remain unverified.                                                                                              |
 | Delivery (PR-17)                  | Docker migration packaging/startup updated but image unverified. Coordinated migration rollout, enforced merge/deploy gates, and rollback rehearsal remain.                                                                                                                                    |
 | Observability/audit (PR-18)       | JSON logs, request IDs, optional sanitized Sentry events, and transactional database history implemented/tested. Live delivery/alerts, uptime checks, actor/request attribution, restricted database roles, and retention remain.                                                              |
 | Recovery (PR-19)                  | Encrypted logical backups and guarded empty-target recovery tested on disposable PostgreSQL 16. Neon history window, production exports/storage/schedule, full application recovery, RPO/RTO, and operational ownership remain unverified or undecided.                                        |
@@ -452,3 +485,10 @@ The repository maintainer needs to assign operational ownership and service
 targets before release. Work order: invoice/data invariants, identity/security,
 durable integrations, wider integration tests and release gates, monitoring and
 recovery. Product additions follow once the existing journeys are trustworthy.
+
+The two synthetic secret-scan exceptions now live directly in the CI workflow,
+which writes a temporary ignore file. The repository .gitleaksignore was removed
+at the maintainer's request. YAML and shell syntax checks passed after this move.
+A fresh full-history scan was not verified: elevated validation timed out, while
+the sandbox run could not read Git history and reported zero commits. The earlier
+46-commit result applies to the same two fingerprints before their relocation.

@@ -389,3 +389,7 @@ resend recipients, and migration behavior.
 Backend startup validates settings before migrations and listening. See
 [configuration](docs/configuration.md) for production URLs, provider settings,
 secret checks, and the remaining Render proxy verification.
+
+CI now audits locked dependencies, scans Git history for secrets, and scans the
+built Docker image. See [security checks](docs/security-checks.md) for blocking
+rules, current dependency findings, and required branch/deployment settings.
