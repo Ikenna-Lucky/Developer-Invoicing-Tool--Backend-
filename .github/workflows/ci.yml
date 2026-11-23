@@ -146,7 +146,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Build the deployment image
-        run: docker build --tag billd-api:ci .
+        run: docker build --pull --no-cache --tag billd-api:ci .
+      - name: Check PDF rendering inside the deployment image
+        run: docker run --rm --network none billd-api:ci bun run test:pdf
       - name: Install checksum-verified Grype
         shell: bash
         run: |
@@ -160,7 +162,25 @@ jobs:
           tar -xzf grype.tar.gz -C security-bin grype
           echo "$RUNNER_TEMP/security-bin" >> "$GITHUB_PATH"
       - name: Scan the built image for high and critical vulnerabilities
+        id: image-scan
         env:
           GRYPE_CHECK_FOR_APP_UPDATE: "false"
           GRYPE_DB_VALIDATE_AGE: "true"
-        run: grype docker:billd-api:ci --fail-on high --output table
+        shell: bash
+        run: |
+          status=0
+          grype docker:billd-api:ci --fail-on high --output json \
+            --file "$RUNNER_TEMP/image-scan.json" || status=$?
+          if test -s "$RUNNER_TEMP/image-scan.json"; then
+            jq -r '.matches[] | select(.vulnerability.severity == "High" or .vulnerability.severity == "Critical") | [.artifact.name, .artifact.version, .vulnerability.id, .vulnerability.severity, (.vulnerability.fix.state // "unknown")] | @tsv' \
+              "$RUNNER_TEMP/image-scan.json"
+          fi
+          exit "$status"
+      - name: Save the image vulnerability report
+        if: ${{ !cancelled() && steps.image-scan.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: image-security-${{ github.sha }}
+          path: ${{ runner.temp }}/image-scan.json
+          if-no-files-found: error
+          retention-days: 14

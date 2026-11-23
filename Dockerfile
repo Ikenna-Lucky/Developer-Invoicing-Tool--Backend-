@@ -1,8 +1,8 @@
-# ── Stage 1: base image with Bun + Chromium for Puppeteer ────────────────────
-FROM oven/bun:1-slim
+# Keep the serving runtime aligned with CI.
+FROM oven/bun:1.4.5-slim
 
 # Install Chromium and its dependencies for Puppeteer PDF generation
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y \
     chromium \
     fonts-liberation \
     libatk-bridge2.0-0 \

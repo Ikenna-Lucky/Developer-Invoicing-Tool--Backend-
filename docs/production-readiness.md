@@ -488,6 +488,28 @@ providers were disabled/stubbed. PostgreSQL 16/Linux CI, Render/Neon rollout, re
 provider behavior, and Grype's built-image findings still need verification. A
 clean dependency audit does not prove a clean OS image or complete security.
 
+## Image release gate follow-up — 23 November 2026
+
+PR-15/16/17 remain blocked by the hosted image scan for `d185f06`: application,
+dependency, and secret checks passed, but the successfully built image failed
+Grype's high/critical threshold. The supplied report contains both unresolved
+Debian package findings and Chromium matches that conflict with vendor fixed
+versions; no blanket false-positive conclusion or accepted risk is recorded.
+
+The Docker runtime is now pinned to Bun 1.4.5. Builds refresh the base and Debian
+packages; CI also runs the existing real-browser tests inside the image and saves
+the complete scan report as a 14-day artifact while preserving scan failures.
+YAML parsing, formatting, Bash syntax, and official registry tag availability
+were checked. Docker's DNS failed before both local builds could pull the base,
+so image execution and a fresh scan are unverified. See
+[security-checks.md](security-checks.md#image-scan-follow-up--23-november-2026)
+for the evidence and next triage steps. No production deployment was performed.
+
+Public read-only checks of `https://billid-api.onrender.com` returned 200 for
+`/health` and 404 for `/health/ready`. The deployed service does not yet expose
+the readiness route; its release identity, database readiness, Render health
+configuration, shutdown, and Sentry delivery remain unverified.
+
 ## Remaining controls
 
 | Area                              | Status and next work                                                                                                                                                                                                                                                                           |

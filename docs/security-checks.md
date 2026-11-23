@@ -90,6 +90,48 @@ built-image scan and Linux workflow execution remain unverified. No clean image
 result is claimed. Application tests were not rerun for workflow/document-only
 changes.
 
+## Image scan follow-up — 23 November 2026
+
+Hosted CI for commit `d185f0651bf28130850f6d6d848f3b5b982b5e6d` passed the
+application, dependency, and secret jobs. The image built, but Grype failed with
+exit 2. The supplied table contains 118 critical and 605 high package findings;
+these are package/advisory pairs, not a count of independently exploitable bugs.
+Chromium and chromium-common account for 608 of those pairs. Other findings
+include OpenSSL, XML, printing, and system libraries. The full image gate remains
+failed; no exceptions have been accepted.
+
+Some matches need source-level investigation: Debian lists installed Chromium
+`156.0.8078.108-1~deb13u1` as fixed for
+[CVE-2026-125350](https://security-tracker.debian.org/tracker/CVE-2026-125350)
+and [CVE-2026-121156](https://security-tracker.debian.org/tracker/CVE-2026-121156),
+while the supplied scan flags that version. This does not invalidate the remaining
+findings. A blank fixed-version column or a `won't fix` state is not permission to
+ignore a vulnerability. Review the match namespace, package source, version range,
+and vendor status before treating an individual result as incorrect.
+
+Docker now uses Bun `1.4.5-slim`, matching CI, and upgrades installed Debian
+packages before installing Chromium. CI builds with `--pull --no-cache` so an old
+base or cached apt layer cannot bypass that refresh. PDF security/lifecycle tests
+run inside the resulting image without external network access. The existing
+explicit browser libraries are retained until an image can be built and their
+dependency requirements checked; no required library was removed speculatively.
+
+Grype still fails on high/critical findings, including unfixed ones. It now saves
+JSON containing match details, package locations, and scanner/database metadata.
+Blocking findings appear in the job log. Download the
+`image-security-<commit SHA>` artifact from the workflow run for the full report;
+it is retained for 14 days, including on scan failure. Scanner failures retain
+their original nonzero status; a missing report also fails artifact collection.
+
+The exact Bun tag was verified through the official registry (HTTP 200). Workflow
+YAML parsing, formatting, and Bash syntax checks passed. Both local build attempts
+failed before pulling the base image because Docker could not resolve
+`auth.docker.io`; host-side registry access succeeded. A refreshed image, its
+container PDF tests, and its vulnerability scan therefore remain unverified.
+Do not assume this refresh removes all of the reported findings. No deployed
+service, Docker daemon configuration, scanner exclusions, or production data was
+changed.
+
 ## Enforcing and maintaining the checks
 
 After pushing, require the dependency, secret, application, and Docker scan jobs
