@@ -149,6 +149,19 @@ export const invoiceCounters = pgTable(
   }),
 );
 
+export type InvoiceIdentity = {
+  sender: Pick<
+    typeof users.$inferSelect,
+    "fullName" | "businessName" | "email" | "address" | "phone" | "logoUrl"
+  >;
+  client: Pick<
+    typeof clients.$inferSelect,
+    "name" | "companyName" | "email" | "address" | "phone"
+  >;
+  source: "issued" | "legacy_backfill";
+  capturedAt: string;
+};
+
 export const invoices = pgTable(
   "invoices",
   {
@@ -165,6 +178,7 @@ export const invoices = pgTable(
     dueDate: timestamp("due_date").notNull(),
     totalAmount: numeric("total_amount", { precision: 10, scale: 2 }).notNull(),
     notes: text("notes"),
+    identitySnapshot: jsonb("identity_snapshot").$type<InvoiceIdentity>(),
     pdfUrl: text("pdf_url"), // Reserved for a stored PDF URL.
     stripePaymentLink: text("stripe_payment_link"), // Stores the Paystack checkout URL.
     createdAt: timestamp("created_at").defaultNow().notNull(),

@@ -187,14 +187,13 @@ test("draft, archived, and already-paid invoices cannot acquire an offline payme
       // Construct a draft directly; issued invoices cannot move backwards.
       const draftId = randomUUID();
       const original = (await saved(invoiceId)).invoice!;
-      await database
-        .insert(schema.invoices)
-        .values({
-          ...original,
-          id: draftId,
-          invoiceNumber: draftId,
-          status: "draft",
-        });
+      await database.insert(schema.invoices).values({
+        ...original,
+        id: draftId,
+        invoiceNumber: draftId,
+        status: "draft",
+        identitySnapshot: null,
+      });
       await expect(
         recordOfflinePayment(database, userId, draftId, randomUUID(), offline),
       ).rejects.toThrow("unpaid issued");

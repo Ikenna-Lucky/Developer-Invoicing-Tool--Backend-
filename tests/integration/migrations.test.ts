@@ -62,6 +62,9 @@ test("forward migration repairs skipped auth and Trash fields without losing inv
   });
   expect(invoice?.invoiceNumber).toBe("INV-0042");
   expect(invoice?.status).toBe("sent");
+  expect(invoice?.identitySnapshot?.source).toBe("legacy_backfill");
+  expect(invoice?.identitySnapshot?.sender.fullName).toBe("Legacy Owner");
+  expect(invoice?.identitySnapshot?.client.name).toBe("Legacy Client");
   expect(invoice?.deletedAt).toBe(null);
   await database.insert(schema.users).values({
     id: randomUUID(),

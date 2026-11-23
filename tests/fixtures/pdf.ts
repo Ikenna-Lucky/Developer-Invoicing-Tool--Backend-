@@ -31,6 +31,7 @@ export function invoicePdfInput(): PDFInput {
       dueDate: date,
       totalAmount: "1250.50",
       notes: "Thanks for your business.",
+      identitySnapshot: null,
       pdfUrl: null,
       stripePaymentLink: "https://checkout.paystack.com/example",
       deletedAt: null,

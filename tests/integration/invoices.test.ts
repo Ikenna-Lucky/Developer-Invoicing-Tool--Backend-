@@ -101,6 +101,219 @@ async function headers(account: { userId: string; email: string }) {
   };
 }
 
+test("drafts use live identity, while issuing freezes identity for API, PDFs, and resends", async () => {
+  const account = await fixture();
+  const auth = await headers(account);
+  const { createInvoicesRouter } = await import("../../src/routes/invoices");
+  const { buildInvoicePdfHtml } = await import("../../src/lib/pdf");
+  let rendered: import("../../src/lib/pdf").PDFInput | undefined;
+  const router = createInvoicesRouter(database, async (input) => {
+    rendered = input;
+    return Buffer.from("%PDF-test");
+  });
+  await database
+    .update(schema.users)
+    .set({
+      businessName: "Original Studio",
+      address: "Original sender address",
+    })
+    .where(eq(schema.users.id, account.userId));
+  await database
+    .update(schema.clients)
+    .set({
+      name: "Original Customer",
+      address: "Original customer address",
+      companyName: null,
+    })
+    .where(eq(schema.clients.id, account.clientId));
+  expect(
+    (await router.request(`/${account.invoice.id}/pdf`, { headers: auth }))
+      .status,
+  ).toBe(200);
+  expect(rendered?.sender.businessName).toBe("Original Studio");
+  expect(rendered?.invoice.identitySnapshot).toBeNull();
+  const sent = await router.request(`/${account.invoice.id}/send`, {
+    method: "POST",
+    headers: auth,
+  });
+  expect(sent.status).toBe(202);
+  const issued = (await sent.json()).data;
+  expect(issued.identitySnapshot.source).toBe("issued");
+  expect(issued.identitySnapshot.sender.businessName).toBe("Original Studio");
+  expect(issued.identitySnapshot.sender).not.toHaveProperty("passwordHash");
+  expect(issued.identitySnapshot.sender).not.toHaveProperty("googleId");
+  await database
+    .update(schema.users)
+    .set({
+      businessName: "Renamed Studio",
+      address: "New sender address",
+      email: `${randomUUID()}@new.test`,
+    })
+    .where(eq(schema.users.id, account.userId));
+  await database
+    .update(schema.clients)
+    .set({
+      name: "Renamed Customer",
+      address: "New customer address",
+      email: "new-client@example.test",
+      companyName: "New Company",
+    })
+    .where(eq(schema.clients.id, account.clientId));
+  const detail = (
+    await (
+      await router.request(`/${account.invoice.id}`, { headers: auth })
+    ).json()
+  ).data;
+  expect(detail.client.name).toBe("Original Customer");
+  expect(detail.client.email).toBe("client@example.test");
+  expect(detail.client.companyName).toBeNull();
+  expect(detail.identitySnapshot).toEqual(issued.identitySnapshot);
+  const list = (
+    await (
+      await router.request("/?search=Original%20Customer", { headers: auth })
+    ).json()
+  ).data;
+  expect(list).toHaveLength(1);
+  expect(list[0].clientName).toBe("Original Customer");
+  expect(list[0].clientCompany).toBeNull();
+  expect(
+    (await router.request(`/${account.invoice.id}/pdf`, { headers: auth }))
+      .status,
+  ).toBe(200);
+  expect(rendered?.sender.businessName).toBe("Original Studio");
+  expect(rendered?.sender.address).toBe("Original sender address");
+  expect(rendered?.invoice.client.address).toBe("Original customer address");
+  const html = buildInvoicePdfHtml(rendered!);
+  expect(html).toContain("Original Studio");
+  expect(html).not.toContain("Renamed Studio");
+  while (
+    await processNextEmail(database, async () => ({
+      accepted: true,
+      id: "snapshot-provider-id",
+    }))
+  ) {}
+  await database
+    .update(schema.emailJobs)
+    .set({ createdAt: new Date(Date.now() - 120_000) })
+    .where(eq(schema.emailJobs.invoiceId, account.invoice.id));
+  expect(
+    (
+      await router.request(`/${account.invoice.id}/resend`, {
+        method: "POST",
+        headers: auth,
+      })
+    ).status,
+  ).toBe(202);
+  const jobs = await database.query.emailJobs.findMany({
+    where: eq(schema.emailJobs.invoiceId, account.invoice.id),
+  });
+  expect(jobs).toHaveLength(2);
+  const pending = jobs.find((job) => job.status === "pending")!;
+  const message = decryptEmail(pending.id, pending.payload!);
+  expect(message.to).toBe("client@example.test");
+  expect(message.subject).toContain("Original Studio");
+  expect(message.html).toContain("Original Customer");
+  expect(message.html).not.toContain("Renamed Customer");
+  await database
+    .update(schema.invoices)
+    .set({ deletedAt: new Date() })
+    .where(eq(schema.invoices.id, account.invoice.id));
+  const trash = (
+    await (
+      await router.request("/trash?search=Original%20Customer", {
+        headers: auth,
+      })
+    ).json()
+  ).data;
+  expect(trash[0].clientName).toBe("Original Customer");
+  const nextDraft = (await createDraftInvoice(
+    database,
+    account.userId,
+    input(account.clientId),
+  ))!;
+  expect(
+    (await router.request(`/${nextDraft.id}/pdf`, { headers: auth })).status,
+  ).toBe(200);
+  expect(rendered?.sender.businessName).toBe("Renamed Studio");
+  expect(rendered?.invoice.client.name).toBe("Renamed Customer");
+  const nextIssue = await router.request(`/${nextDraft.id}/send`, {
+    method: "POST",
+    headers: auth,
+  });
+  expect(
+    (await nextIssue.json()).data.identitySnapshot.sender.businessName,
+  ).toBe("Renamed Studio");
+});
+
+test("snapshot capture cannot be supplied on drafts or rewritten after issue through SQL", async () => {
+  const account = await fixture();
+  await expect(
+    client`UPDATE invoices SET identity_snapshot = '{}'::jsonb WHERE id = ${account.invoice.id}`,
+  ).rejects.toThrow("Draft invoices");
+  await database
+    .update(schema.invoices)
+    .set({ status: "sent" })
+    .where(eq(schema.invoices.id, account.invoice.id));
+  const issued = await database.query.invoices.findFirst({
+    where: eq(schema.invoices.id, account.invoice.id),
+  });
+  expect(issued?.identitySnapshot?.source).toBe("issued");
+  for (const replacement of [null, {}]) {
+    await expect(
+      client`UPDATE invoices SET identity_snapshot = ${replacement === null ? null : client.json(replacement)} WHERE id = ${account.invoice.id}`,
+    ).rejects.toThrow("identity cannot be changed");
+  }
+  const another = await fixture();
+  expect(another.invoice.identitySnapshot).toBeNull();
+});
+
+test("sending waits for concurrent identity edits and snapshots their committed details", async () => {
+  const account = await fixture();
+  const auth = await headers(account);
+  let entered!: () => void, release!: () => void;
+  const editing = new Promise<void>((done) => {
+    entered = done;
+  });
+  const finishEdit = new Promise<void>((done) => {
+    release = done;
+  });
+  const writer = database.transaction(async (tx) => {
+    await tx
+      .update(schema.users)
+      .set({ businessName: "Committed Studio" })
+      .where(eq(schema.users.id, account.userId));
+    await tx
+      .update(schema.clients)
+      .set({ name: "Committed Customer" })
+      .where(eq(schema.clients.id, account.clientId));
+    entered();
+    await finishEdit;
+  });
+  await editing;
+  let completed = false;
+  const send = Promise.resolve(
+    invoicesRouter.request(`/${account.invoice.id}/send`, {
+      method: "POST",
+      headers: auth,
+    }),
+  ).then((response) => {
+    completed = true;
+    return response;
+  });
+  try {
+    await Bun.sleep(30);
+    expect(completed).toBe(false);
+  } finally {
+    release();
+  }
+  await writer;
+  const response = await send;
+  expect(response.status).toBe(202);
+  const issued = (await response.json()).data;
+  expect(issued.identitySnapshot.sender.businessName).toBe("Committed Studio");
+  expect(issued.identitySnapshot.client.name).toBe("Committed Customer");
+});
+
 test("each user starts at INV-0001 and concurrent creations stay unique", async () => {
   const first = await owner(),
     second = await owner();
@@ -600,6 +813,11 @@ test("an email queue failure leaves an invoice editable instead of falsely issue
         where: eq(schema.invoices.id, account.invoice.id),
       }))!.status,
     ).toBe("draft");
+    expect(
+      (await database.query.invoices.findFirst({
+        where: eq(schema.invoices.id, account.invoice.id),
+      }))!.identitySnapshot,
+    ).toBeNull();
     expect(
       await database.query.emailJobs.findMany({
         where: eq(schema.emailJobs.invoiceId, account.invoice.id),

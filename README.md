@@ -381,3 +381,7 @@ Render, configure `/health/ready` as the health check and use the direct
 `bun scripts/start.ts` startup command when running without Docker. See
 [server lifecycle](docs/server-lifecycle.md) for signal handling, deployment
 configuration, timeout behavior, and verification limits.
+
+Issued invoices preserve business and client identity for future PDFs and emails.
+See [invoice identity snapshots](docs/invoice-identity.md) for legacy backfill,
+resend recipients, and migration behavior.

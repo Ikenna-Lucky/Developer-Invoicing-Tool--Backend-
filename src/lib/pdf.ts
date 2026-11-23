@@ -3,6 +3,14 @@ import { HTTPException } from "hono/http-exception";
 import { escapeEmailHtml as escapeHtml } from "./email";
 import { safePdfLogo } from "./pdf-logo";
 import type { Invoice, InvoiceItem, Client, User } from "../db/schema";
+import { invoiceWithIdentity } from "./invoice-identity";
+
+function withIdentity(input: PDFInput): PDFInput {
+  return {
+    invoice: invoiceWithIdentity(input.invoice),
+    sender: { ...input.sender, ...input.invoice.identitySnapshot?.sender },
+  };
+}
 
 export type PDFInput = {
   invoice: Invoice & {
@@ -39,6 +47,7 @@ const STATUS_STYLES: Record<
 };
 
 export function buildInvoicePdfHtml(input: PDFInput): string {
+  input = withIdentity(input);
   const { invoice, sender } = input;
   if (invoice.items.length > 100)
     throw new HTTPException(422, {
@@ -776,6 +785,7 @@ export function createInvoicePdfRenderer(
   let currentWork: Promise<Buffer> | undefined;
   const browsers = new Set<Browser>();
   const render = async (input: PDFInput): Promise<Buffer> => {
+    input = withIdentity(input);
     if (stopping)
       throw new HTTPException(503, {
         message: "PDF renderer is shutting down",

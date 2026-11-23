@@ -362,6 +362,35 @@ need review. Automatic scheduled reconciliation, payment reversals/refunds,
 partial payments, settlement routing, and historical repair remain outstanding.
 No production migration or deployment was performed.
 
+## Issued invoice identity snapshots — 22 November 2026
+
+PR-09/18: implemented and verified locally. First issuance captures allowlisted
+sender/client fields in PostgreSQL; drafts remain live. Issued snapshots cannot
+be replaced or removed. API detail/list/Trash/name-search, PDFs, and invoice email
+resends use saved identity, including explicit nulls. Send holds shared profile
+locks to keep checkout/email/capture consistent with concurrent profile edits.
+Failed issuance rolls back snapshot, status, and queued email together. Resends
+retain the original recipient; explicit correction/redelivery remains separate.
+See [invoice identity](invoice-identity.md) for the contract and rollout limits.
+
+Migration 0011 backfills existing issued invoices from profiles available at
+migration time with `legacy_backfill` provenance; it cannot recover lost original
+identity. New captures are marked `issued`. Migration storage/locking must be
+assessed against production invoice and embedded-logo volume. No production data,
+configuration, or frontend files changed. Older frontend views that derive sender
+identity from the current profile still need to consume the saved sender fields.
+
+Bun 1.4.5 TypeScript, 47 unit/runtime tests (one existing Windows POSIX-signal skip),
+117 PostgreSQL integration tests (665 assertions), and seven real Windows Chrome
+tests (33 assertions) passed. Database checks used isolated PostgreSQL 17 with
+matching backup tools because Docker remained unavailable. They cover profile
+changes, subsequent invoices, concurrent edits, immutable SQL capture, API/search,
+PDF input/HTML, saved email recipients, rollback, and legacy migration. Schema
+snapshot generation reports no further changes. One prior full run caught a
+payment fixture copying an issued snapshot into a draft; the fixture now clears
+it and the full rerun passed. Render/Neon rollout, PostgreSQL 16/Linux CI, live
+provider behavior, migration timing at production volume, and frontend invoice
+views remain unverified. Document identity is frozen, not a byte-identical PDF.
 ## Remaining controls
 
 | Area                              | Status and next work                                                                                                                                                                                                                                                                           |
@@ -373,7 +402,7 @@ No production migration or deployment was performed.
 | Ownership (PR-06)                 | Cross-user invoice read/edit/send/delete and client selection tests passed. Wider auth/client workflows remain. Team roles are outside the current individual-user model.                                                                                                                      |
 | API security (PR-07)              | Exact origin CSRF checks and bounded authentication bodies implemented/tested. PDF escaping, network denial, logo validation, and render limits are tested. Wider request limits and configuration checks remain.                                                                              |
 | Privacy and retention (PR-08)     | Allowlisted operational logs and outgoing monitoring events implemented/tested. Account export/deletion and retention rules remain.                                                                                                                                                            |
-| Data correctness (PR-09)          | Payment, numbering, rounding, deletion, and forward migration tests passed natively. Offline payment history and reference-based reconciliation are implemented/tested. Historical repair and identity snapshots remain.                                                                       |
+| Data correctness (PR-09)          | Payment, numbering, rounding, deletion, and forward migration tests passed natively. Offline payment history and reference-based reconciliation are implemented/tested. Issued identity snapshots are implemented/tested. Historical financial/identity repair remains.                                                                       |
 | Integrations/jobs (PR-10)         | Durable encrypted email jobs, provider acceptance state, retries, and timeouts are tested locally. Owner-triggered payment reconciliation is implemented/tested. Hosted workers, live delivery, backpressure, and scheduled reconciliation remain.                                             |
 | Tests (PR-11)                     | Financial, invoice isolation, session, and migration regressions passed. Real PDF security tests passed; live OAuth, provider sandboxes, and assembled frontend/API journeys remain.                                                                                                           |
 | UX/contracts (PR-12)              | Frontend pagination controls/selectors/totals must be updated before the paginated contract is deployed to affected users. Edit/delete affordances and client-deletion copy need updates for the 409 responses. Browser flows, session expiry, and accessible recovery remain unverified.      |

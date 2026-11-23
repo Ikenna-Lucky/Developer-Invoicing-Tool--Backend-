@@ -10,7 +10,8 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
-import { eq, and, desc, ilike, or, isNull, isNotNull } from "drizzle-orm";
+import { eq, and, desc, ilike, or, isNull, isNotNull, sql } from "drizzle-orm";
+import { invoiceWithIdentity } from "../lib/invoice-identity";
 import { db as defaultDb, type DB } from "../db";
 import {
   createDraftInvoice,
@@ -47,6 +48,7 @@ export function createInvoicesRouter(
   verifyPayment = verifyPaystackPayment,
 ) {
   const db = database;
+  const invoiceClientName = sql<string>`CASE WHEN ${invoices.identitySnapshot} IS NULL THEN ${clients.name} ELSE ${invoices.identitySnapshot}->'client'->>'name' END`;
   const invoicesRouter = new Hono<{ Variables: Variables }>();
 
   invoicesRouter.use("*", createAuthMiddleware(database, true));
@@ -201,9 +203,11 @@ export function createInvoicesRouter(
         createdAt: invoices.createdAt,
         updatedAt: invoices.updatedAt,
         clientId: invoices.clientId,
-        clientName: clients.name,
-        clientEmail: clients.email,
-        clientCompany: clients.companyName,
+        clientName: invoiceClientName,
+        clientEmail: sql<string>`CASE WHEN ${invoices.identitySnapshot} IS NULL THEN ${clients.email} ELSE ${invoices.identitySnapshot}->'client'->>'email' END`,
+        clientCompany: sql<
+          string | null
+        >`CASE WHEN ${invoices.identitySnapshot} IS NULL THEN ${clients.companyName} ELSE ${invoices.identitySnapshot}->'client'->>'companyName' END`,
       })
       .from(invoices)
       .leftJoin(clients, eq(invoices.clientId, clients.id))
@@ -217,7 +221,7 @@ export function createInvoicesRouter(
           search
             ? or(
                 ilike(invoices.invoiceNumber, searchPattern(search)),
-                ilike(clients.name, searchPattern(search)),
+                sql`${invoiceClientName} ILIKE ${searchPattern(search)}`,
               )
             : undefined,
         ),
@@ -246,8 +250,8 @@ export function createInvoicesRouter(
         totalAmount: invoices.totalAmount,
         deletedAt: invoices.deletedAt,
         clientId: invoices.clientId,
-        clientName: clients.name,
-        clientEmail: clients.email,
+        clientName: invoiceClientName,
+        clientEmail: sql<string>`CASE WHEN ${invoices.identitySnapshot} IS NULL THEN ${clients.email} ELSE ${invoices.identitySnapshot}->'client'->>'email' END`,
       })
       .from(invoices)
       .leftJoin(clients, eq(invoices.clientId, clients.id))
@@ -261,7 +265,7 @@ export function createInvoicesRouter(
           search
             ? or(
                 ilike(invoices.invoiceNumber, searchPattern(search)),
-                ilike(clients.name, searchPattern(search)),
+                sql`${invoiceClientName} ILIKE ${searchPattern(search)}`,
               )
             : undefined,
         ),
@@ -293,7 +297,7 @@ export function createInvoicesRouter(
       return c.json({ error: "Invoice not found" }, 404);
     }
 
-    return c.json({ data: invoice });
+    return c.json({ data: invoiceWithIdentity(invoice) });
   });
 
   // GET /invoices/:id/pdf — streams the invoice as a PDF download
@@ -328,7 +332,10 @@ export function createInvoicesRouter(
           429,
         );
       }
-      const pdfBuffer = await renderPdf({ invoice, sender });
+      const pdfBuffer = await renderPdf({
+        invoice: invoiceWithIdentity(invoice),
+        sender: { ...sender, ...invoice.identitySnapshot?.sender },
+      });
 
       const filename = `${invoice.invoiceNumber.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80) || "invoice"}.pdf`;
 
@@ -427,10 +434,20 @@ export function createInvoicesRouter(
         });
       }
 
-      const user = await tx.query.users.findFirst({
-        where: eq(users.id, userId),
-      });
+      const [user] = await tx
+        .select()
+        .from(users)
+        .where(eq(users.id, userId))
+        .for("share");
       if (!user) throw new HTTPException(404, { message: "User not found" });
+      const [customer] = await tx
+        .select()
+        .from(clients)
+        .where(eq(clients.id, invoice.clientId))
+        .for("share");
+      if (!customer)
+        throw new HTTPException(404, { message: "Client not found" });
+      invoice.client = customer;
 
       // Send without a payment link if Paystack fails or takes longer than 8 seconds.
       let paymentLink: string | null = null;
@@ -497,18 +514,20 @@ export function createInvoicesRouter(
         with: { items: true, client: true },
       });
 
-      const senderName = user.businessName ?? user.fullName;
+      const issued = invoiceWithIdentity(updated!);
+      const sender = issued.identitySnapshot!.sender;
+      const senderName = sender.businessName ?? sender.fullName;
       const email = await enqueueEmail(tx, {
         userId,
         invoiceId,
         purpose: "invoice",
         message: {
-          to: invoice.client.email,
+          to: issued.client.email,
           subject: `Invoice ${invoice.invoiceNumber} from ${senderName} — ₦${Number(invoice.totalAmount).toLocaleString("en-NG")}`,
-          html: buildInvoiceEmail({ invoice, senderName, paymentLink }),
+          html: buildInvoiceEmail({ invoice: issued, senderName, paymentLink }),
         },
       });
-      return { updated, email };
+      return { updated: issued, email };
     });
     return c.json(
       {
@@ -562,7 +581,9 @@ export function createInvoicesRouter(
       });
       if (!user) throw new HTTPException(404, { message: "User not found" });
 
-      const senderName = user.businessName ?? user.fullName;
+      const issued = invoiceWithIdentity(invoice);
+      const sender = issued.identitySnapshot?.sender ?? user;
+      const senderName = sender.businessName ?? sender.fullName;
       const paymentLink = invoice.stripePaymentLink ?? null;
 
       return enqueueEmail(tx, {
@@ -570,9 +591,9 @@ export function createInvoicesRouter(
         invoiceId,
         purpose: "invoice",
         message: {
-          to: invoice.client.email,
+          to: issued.client.email,
           subject: `Invoice ${invoice.invoiceNumber} from ${senderName} — ₦${Number(invoice.totalAmount).toLocaleString("en-NG")}`,
-          html: buildInvoiceEmail({ invoice, senderName, paymentLink }),
+          html: buildInvoiceEmail({ invoice: issued, senderName, paymentLink }),
         },
       });
     });

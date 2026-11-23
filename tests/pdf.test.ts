@@ -9,6 +9,36 @@ import {
 import { safePdfLogo } from "../src/lib/pdf-logo";
 import { invoicePdfInput, pngLogo } from "./fixtures/pdf";
 
+test("PDF HTML uses saved identity including nulls instead of changed profile details", () => {
+  const input = invoicePdfInput();
+  input.invoice.identitySnapshot = {
+    source: "issued",
+    capturedAt: "2026-11-21T00:00:00Z",
+    sender: {
+      fullName: "Original Owner",
+      businessName: null,
+      email: "original@example.test",
+      address: null,
+      phone: null,
+      logoUrl: null,
+    },
+    client: {
+      name: "Original Client",
+      companyName: null,
+      email: "original-client@example.test",
+      address: null,
+      phone: null,
+    },
+  };
+  const html = buildInvoicePdfHtml(input);
+  expect(html).toContain("Original Owner");
+  expect(html).toContain("Original Client");
+  expect(html).not.toContain("Test Studio");
+  expect(html).not.toContain("Client Ltd");
+  expect(html).not.toContain(pngLogo);
+  expect(input.sender.businessName).toBe("Test Studio");
+});
+
 test("invoice text is escaped in every PDF field", () => {
   const input = invoicePdfInput();
   const attack =
