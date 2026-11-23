@@ -132,6 +132,51 @@ Do not assume this refresh removes all of the reported findings. No deployed
 service, Docker daemon configuration, scanner exclusions, or production data was
 changed.
 
+## Alpine candidate evaluation — 24 November 2026
+
+The JSON report for `241e1cd917091f2e3aa7b0d494fc5f5dd609ee96` contains 1,504
+matches, including 118 critical and 601 high package/advisory pairs across 352
+distinct blocking CVEs. All blocking matches use `debian:distro:debian:13` through
+the dpkg matcher, not generic CPE matching. Chromium and chromium-common account
+for 608 blocking pairs. There are 642 `not-fixed` and 77 `wont-fix` blocking
+matches, with no listed fixed versions. The valid Grype database was built on
+23 November. Some vendor fixed-version discrepancies remain; they do not establish
+that all 719 blocking matches are incorrect.
+
+`Dockerfile.alpine` is an evaluation candidate, not the Render Dockerfile. The
+official registry metadata for `oven/bun:1.4.5-alpine` showed Alpine 3.24.4. Alpine
+3.24's package catalog lists Chromium `158.0.8127.36-r0`, newer than the Debian
+browser in the report. The candidate checks the Alpine release, stays on its
+stable repositories, upgrades packages, and installs Chromium, CA certificates,
+and Liberation fonts. Package dependencies are resolved by apk. No Debian
+libraries are copied into the musl-based image and no edge repositories are mixed
+in. Newer packages alone do not prove fewer vulnerabilities or compatibility.
+
+CI now evaluates both Dockerfiles in parallel with `fail-fast: false`. The
+existing required check name `Docker build` remains the Debian job; the additional
+job is `Alpine image evaluation`. Each image runs the existing runtime and PDF
+tests without external network access. Scan installation/execution still runs
+after a test failure if the image built, so compatibility failures do not hide
+security evidence. Both scans retain the high/critical failure threshold and
+14-day reports, now named `image-security-<SHA>-debian` and
+`image-security-<SHA>-alpine` to avoid artifact collisions.
+
+Promote a candidate only after its build, runtime tests, PDF tests, vulnerability
+triage, and database/startup integration have been verified. In particular, musl
+compatibility is not established by the existing Windows or Debian tests. This
+evaluation does not deploy either image or change Render settings.
+
+Local YAML parsing, formatting, and Bash syntax checks passed. The Alpine pull
+failed at Docker's DNS lookup for `auth.docker.io`, while direct host-side registry
+inspection succeeded. No local candidate execution or comparative scan result is
+claimed. The next pushed workflow run supplies those reports; unresolved findings
+still block release.
+
+Sources: [official Bun image variants](https://hub.docker.com/r/oven/bun),
+[Alpine 3.24 Chromium](https://pkgs.alpinelinux.org/package/v3.24/community/x86_64/chromium),
+[Liberation fonts](https://pkgs.alpinelinux.org/package/v3.24/main/x86_64/font-liberation),
+and [Puppeteer's Alpine guidance](https://pptr.dev/troubleshooting#running-on-alpine).
+
 ## Enforcing and maintaining the checks
 
 After pushing, require the dependency, secret, application, and Docker scan jobs

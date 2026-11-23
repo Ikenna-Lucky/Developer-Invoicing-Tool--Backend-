@@ -510,6 +510,23 @@ Public read-only checks of `https://billid-api.onrender.com` returned 200 for
 the readiness route; its release identity, database readiness, Render health
 configuration, shutdown, and Sentry delivery remain unverified.
 
+## Alternative image evaluation — 24 November 2026
+
+PR-15/16/17 remain blocked: the supplied scan for `241e1cd` contains 719 blocking
+package/advisory matches, all from Debian 13 records, with no listed fixed versions.
+An Alpine 3.24 candidate using the official Bun 1.4.5 Alpine image and Alpine's
+newer Chromium package is prepared in `Dockerfile.alpine`. CI builds, tests, scans,
+and retains separate reports for both variants without cancelling the other on
+failure. The existing Debian check name and Render Dockerfile are preserved.
+
+Registry metadata and official package catalogs were checked; YAML parsing,
+formatting, and Bash syntax passed locally. Docker's DNS prevented the candidate
+pull, so comparative scans and musl/runtime/browser compatibility remain
+unverified. Database/startup integration is also required before promotion. No
+exceptions, severity reductions, production settings, or deployments were made.
+Details and artifact names are in
+[security-checks.md](security-checks.md#alpine-candidate-evaluation--24-november-2026).
+
 ## Remaining controls
 
 | Area                              | Status and next work                                                                                                                                                                                                                                                                           |
