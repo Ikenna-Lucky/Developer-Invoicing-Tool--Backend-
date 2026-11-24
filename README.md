@@ -117,6 +117,11 @@ drizzle/         SQL migrations
 
 ## API overview
 
+Interactive Swagger documentation is available at `GET /docs`; the versioned
+OpenAPI 3.1 document used by the frontend is available at `GET /openapi.json`.
+It documents cookie authentication, browser Origin requirements, request fields,
+response fields, pagination, and error states.
+
 Client and invoice routes require an active, verified session (access token cookie).
 Profile, verification, and logout/recovery flows use the authentication rules described below.
 Paystack webhooks require a valid signature.

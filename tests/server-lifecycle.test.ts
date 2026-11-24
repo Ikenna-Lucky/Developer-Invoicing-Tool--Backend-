@@ -71,6 +71,12 @@ async function startApi() {
 test("the actual API entry serves liveness during a DB outage and closes cleanly on its shutdown handler", async () => {
   const { child, url } = await startApi();
   try {
+    const contract = await fetch(`${url}/openapi.json`);
+    expect(contract.status).toBe(200);
+    expect((await contract.json()).openapi).toBe("3.1.0");
+    const docs = await fetch(`${url}/docs`);
+    expect(docs.status).toBe(200);
+    expect(await docs.text()).toContain("swagger-ui");
     expect((await fetch(`${url}/health`)).status).toBe(200);
     const readiness = await fetch(`${url}/health/ready`, {
       signal: AbortSignal.timeout(4000),

@@ -20,6 +20,7 @@ import clients from "./routes/clients";
 import invoices from "./routes/invoices";
 import webhooks from "./routes/webhooks";
 import payouts from "./routes/payouts";
+import { openApiDocument } from "./openapi";
 
 const app = new Hono();
 app.use("*", requestLogging());
@@ -61,11 +62,18 @@ app.route("/invoices", invoices);
 app.route("/webhooks", webhooks);
 app.route("/payouts", payouts);
 
+app.get("/openapi.json", (c) => c.json(openApiDocument));
+app.get("/docs", (c) =>
+  c.html(
+    `<!doctype html><html><head><meta charset="utf-8"><title>Billd API docs</title><link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css"></head><body><div id="swagger-ui"></div><script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script><script>SwaggerUIBundle({url:'/openapi.json',dom_id:'#swagger-ui',persistAuthorization:true,displayRequestDuration:true});</script></body></html>`,
+  ),
+);
+
 app.get("/", (c) => {
   return c.json({
     message: "Developer Invoicing API",
     version: "1.0.0",
-    docs: "/health",
+    docs: "/docs",
   });
 });
 

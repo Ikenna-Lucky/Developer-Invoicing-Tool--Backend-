@@ -6,7 +6,7 @@
     "dev": "bun run --watch src/index.ts",
     "start": "bun scripts/start.ts",
     "typecheck": "tsc --noEmit",
-    "test": "bun test tests/paystack.test.ts tests/jwt.test.ts tests/email.test.ts tests/pdf.test.ts tests/observability.test.ts tests/database-backup.test.ts tests/request-limits.test.ts tests/shutdown.test.ts tests/server-lifecycle.test.ts tests/configuration.test.ts",
+    "test": "bun test tests/paystack.test.ts tests/jwt.test.ts tests/email.test.ts tests/pdf.test.ts tests/observability.test.ts tests/database-backup.test.ts tests/request-limits.test.ts tests/shutdown.test.ts tests/server-lifecycle.test.ts tests/configuration.test.ts tests/openapi.test.ts",
     "test:pdf": "bun test tests/pdf-browser.test.ts",
     "test:integration": "bun test tests/integration",
     "monitoring:check": "bun run scripts/check-monitoring.ts",
