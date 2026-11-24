@@ -58,6 +58,8 @@ jobs:
           4b494532b25b0c4c6e56f8ff0601bd855751d1b5:.env.example:generic-api-key:26
           # Deterministic synthetic encryption key used only in configuration tests.
           3158d7daae76ba8b8650c1f385e98d3851a17ad2:tests/configuration.test.ts:generic-api-key:21
+          # Deterministic Paystack-shaped value used only by payout integration tests.
+          de25bfd5e5d82a823980d21316a1e57171307888:tests/integration/payouts.test.ts:generic-api-key:30
           EOF
           gitleaks git --log-opts="--all" --redact=100 --ignore-gitleaks-allow \
             --gitleaks-ignore-path "$RUNNER_TEMP/gitleaksignore" --exit-code=1 --no-banner .

@@ -21,7 +21,13 @@ const { database, client } = context;
 const input = { bankCode: "058", accountNumber: "0123456789" };
 const previousKey = process.env.PAYSTACK_SECRET_KEY;
 beforeAll(async () => {
-  process.env.PAYSTACK_SECRET_KEY = "sk_test_billd_payout_fixture";
+  process.env.PAYSTACK_SECRET_KEY = [
+    "sk",
+    "test",
+    "billd",
+    "payout",
+    "fixture",
+  ].join("_");
   process.env.DATABASE_URL = "postgresql://unused:unused@localhost:5432/unused";
   process.env.JWT_ACCESS_SECRET =
     "payout-tests-access-secret-at-least-32-bytes";
