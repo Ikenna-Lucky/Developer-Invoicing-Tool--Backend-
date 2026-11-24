@@ -1,8 +1,8 @@
-# ── Stage 1: base image with Bun + Chromium for Puppeteer ────────────────────
-FROM oven/bun:1-slim
+# Keep the serving runtime aligned with CI.
+FROM oven/bun:1.4.5-slim
 
 # Install Chromium and its dependencies for Puppeteer PDF generation
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y \
     chromium \
     fonts-liberation \
     libatk-bridge2.0-0 \
@@ -27,14 +27,14 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Tell Puppeteer to skip downloading its own Chrome and use the system one
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+ENV PUPPETEER_SKIP_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 WORKDIR /app
 
 # Install dependencies first (cached layer — only re-runs if package files change)
 COPY package.json bun.lock ./
-RUN bun install
+RUN bun install --frozen-lockfile
 
 # Copy the rest of the source code
 COPY . .
@@ -42,4 +42,4 @@ COPY . .
 # Render injects PORT at runtime; default to 3001 for local Docker runs
 EXPOSE 3001
 
-CMD ["bun", "run", "src/index.ts"]
+CMD ["bun", "scripts/start.ts"]

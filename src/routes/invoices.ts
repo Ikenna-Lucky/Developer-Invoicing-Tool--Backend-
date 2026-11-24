@@ -1,560 +1,649 @@
+import {
+  listQuery,
+  listPage,
+  beforeCursor,
+  cursorTime,
+  searchPattern,
+} from "../lib/pagination";
+import { reportError } from "../lib/observability";
 import { Hono } from "hono";
+import { HTTPException } from "hono/http-exception";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
-import { eq, and, desc, ilike, or, sql, isNull, isNotNull } from "drizzle-orm";
-import { db } from "../db";
-import { invoices, invoiceItems, clients, users } from "../db/schema";
-import { authMiddleware } from "../middleware/auth";
-import { generateInvoicePDF } from "../lib/pdf";
-import { sendMail } from "../lib/email";
+import { eq, and, desc, ilike, or, isNull, isNotNull, sql } from "drizzle-orm";
+import { invoiceWithIdentity } from "../lib/invoice-identity";
+import { db as defaultDb, type DB } from "../db";
+import {
+  createDraftInvoice,
+  updateDraftInvoice,
+  changeInvoiceStatus,
+  permanentlyDeleteDraftInvoice,
+  lockOwnedInvoice,
+} from "../lib/invoices";
+import {
+  invoices,
+  invoiceItems,
+  clients,
+  users,
+  emailJobs,
+  payments,
+} from "../db/schema";
+import {
+  offlinePaymentSchema,
+  recordOfflinePayment,
+  recordPaystackPayment,
+  PaymentConflict,
+} from "../lib/payments";
+import { verifyPaystackPayment } from "../lib/paystack";
+import { initializeInvoiceCheckout } from "../lib/payment-checkout";
+import { createAuthMiddleware } from "../middleware/auth";
+import { generateInvoicePDF, type PDFInput } from "../lib/pdf";
+import { escapeEmailHtml } from "../lib/email";
+import { enqueueEmail } from "../lib/email-queue";
+import { consumeRateLimit } from "../middleware/rate-limit";
 import type { Variables } from "../types";
 
-const invoicesRouter = new Hono<{ Variables: Variables }>();
+export function createInvoicesRouter(
+  database: DB = defaultDb,
+  renderPdf: (input: PDFInput) => Promise<Buffer> = generateInvoicePDF,
+  verifyPayment = verifyPaystackPayment,
+  initializeCheckout = initializeInvoiceCheckout,
+) {
+  const db = database;
+  const invoiceClientName = sql<string>`CASE WHEN ${invoices.identitySnapshot} IS NULL THEN ${clients.name} ELSE ${invoices.identitySnapshot}->'client'->>'name' END`;
+  const invoicesRouter = new Hono<{ Variables: Variables }>();
 
-invoicesRouter.use("*", authMiddleware);
+  invoicesRouter.use("*", createAuthMiddleware(database, true));
 
-const lineItemSchema = z.object({
-  description: z.string().min(1, "Description is required"),
-  quantity: z.number().positive("Quantity must be positive"),
-  rate: z.number().positive("Rate must be positive"),
-});
-
-const createInvoiceSchema = z.object({
-  clientId: z.string().uuid("Invalid client ID"),
-  issueDate: z.string().datetime({ message: "Invalid issue date" }),
-  dueDate: z.string().datetime({ message: "Invalid due date" }),
-  notes: z.string().optional(),
-  items: z.array(lineItemSchema).min(1, "At least one line item is required"),
-});
-
-const updateInvoiceSchema = z.object({
-  clientId: z.string().uuid().optional(),
-  issueDate: z.string().datetime().optional(),
-  dueDate: z.string().datetime().optional(),
-  notes: z.string().optional(),
-  items: z.array(lineItemSchema).min(1).optional(),
-});
-
-const updateStatusSchema = z.object({
-  status: z.enum(["draft", "sent", "paid", "overdue"]),
-});
-
-// Finds the highest existing invoice number for this user and increments it.
-// INV-0001, INV-0002, ... INV-9999
-async function generateInvoiceNumber(userId: string): Promise<string> {
-  const existing = await db
-    .select({ invoiceNumber: invoices.invoiceNumber })
-    .from(invoices)
-    .where(eq(invoices.userId, userId))
-    .orderBy(desc(invoices.createdAt));
-
-  if (existing.length === 0) {
-    return "INV-0001";
-  }
-
-  const numbers = existing
-    .map((inv) => parseInt(inv.invoiceNumber.replace("INV-", ""), 10))
-    .filter((n) => !isNaN(n));
-
-  const max = numbers.length > 0 ? Math.max(...numbers) : 0;
-  return `INV-${String(max + 1).padStart(4, "0")}`;
-}
-
-function calculateTotal(items: z.infer<typeof lineItemSchema>[]): number {
-  return items.reduce((sum, item) => sum + item.quantity * item.rate, 0);
-}
-
-// GET /invoices — all invoices for the logged-in user with client info,
-// supports ?status= and ?search= (invoice number or client name)
-invoicesRouter.get("/", async (c) => {
-  const userId = c.get("userId");
-  const status = c.req.query("status") as
-    | "draft"
-    | "sent"
-    | "paid"
-    | "overdue"
-    | undefined;
-  const search = c.req.query("search");
-
-  const results = await db
-    .select({
-      id: invoices.id,
-      invoiceNumber: invoices.invoiceNumber,
-      status: invoices.status,
-      issueDate: invoices.issueDate,
-      dueDate: invoices.dueDate,
-      totalAmount: invoices.totalAmount,
-      notes: invoices.notes,
-      pdfUrl: invoices.pdfUrl,
-      stripePaymentLink: invoices.stripePaymentLink,
-      createdAt: invoices.createdAt,
-      updatedAt: invoices.updatedAt,
-      clientId: invoices.clientId,
-      clientName: clients.name,
-      clientEmail: clients.email,
-      clientCompany: clients.companyName,
-    })
-    .from(invoices)
-    .leftJoin(clients, eq(invoices.clientId, clients.id))
-    .where(
-      and(
-        eq(invoices.userId, userId),
-        isNull(invoices.deletedAt), // exclude soft-deleted
-        status ? eq(invoices.status, status) : undefined,
-        search
-          ? or(
-              ilike(invoices.invoiceNumber, `%${search}%`),
-              ilike(clients.name, `%${search}%`),
-            )
-          : undefined,
-      ),
-    )
-    .orderBy(desc(invoices.createdAt));
-
-  return c.json({ data: results });
-});
-
-// GET /invoices/trash — soft-deleted invoices. Has to come before GET /:id
-// or "trash" gets matched as an invoice ID.
-invoicesRouter.get("/trash", async (c) => {
-  const userId = c.get("userId");
-
-  const results = await db
-    .select({
-      id: invoices.id,
-      invoiceNumber: invoices.invoiceNumber,
-      status: invoices.status,
-      issueDate: invoices.issueDate,
-      dueDate: invoices.dueDate,
-      totalAmount: invoices.totalAmount,
-      deletedAt: invoices.deletedAt,
-      clientId: invoices.clientId,
-      clientName: clients.name,
-      clientEmail: clients.email,
-    })
-    .from(invoices)
-    .leftJoin(clients, eq(invoices.clientId, clients.id))
-    .where(and(eq(invoices.userId, userId), isNotNull(invoices.deletedAt)))
-    .orderBy(desc(invoices.deletedAt));
-
-  return c.json({ data: results });
-});
-
-// GET /invoices/:id — single invoice with line items and client
-invoicesRouter.get("/:id", async (c) => {
-  const userId = c.get("userId");
-  const invoiceId = c.req.param("id");
-
-  const invoice = await db.query.invoices.findFirst({
-    where: and(eq(invoices.id, invoiceId), eq(invoices.userId, userId)),
-    with: {
-      items: true,
-      client: true,
+  const paymentView = (payment: typeof payments.$inferSelect) => {
+    const { idempotencyKey, ...publicPayment } = payment;
+    return publicPayment;
+  };
+  invoicesRouter.get(
+    "/:id/payments",
+    zValidator("param", z.object({ id: z.string().uuid() })),
+    async (c) => {
+      const invoiceId = c.req.valid("param").id;
+      const invoice = await db.query.invoices.findFirst({
+        where: and(
+          eq(invoices.id, invoiceId),
+          eq(invoices.userId, c.get("userId")),
+          isNull(invoices.deletedAt),
+        ),
+      });
+      if (!invoice) return c.json({ error: "Invoice not found" }, 404);
+      const rows = await db.query.payments.findMany({
+        where: eq(payments.invoiceId, invoiceId),
+        orderBy: [desc(payments.createdAt)],
+        limit: 100,
+      });
+      return c.json({ data: rows.map(paymentView) });
     },
-  });
-
-  if (!invoice) {
-    return c.json({ error: "Invoice not found" }, 404);
-  }
-
-  return c.json({ data: invoice });
-});
-
-// GET /invoices/:id/pdf — streams the invoice as a PDF download
-invoicesRouter.get("/:id/pdf", async (c) => {
-  const userId = c.get("userId");
-  const invoiceId = c.req.param("id");
-
-  const invoice = await db.query.invoices.findFirst({
-    where: and(eq(invoices.id, invoiceId), eq(invoices.userId, userId)),
-    with: { items: true, client: true },
-  });
-
-  if (!invoice) return c.json({ error: "Invoice not found" }, 404);
-
-  // needed for logo, business name, contact details on the PDF
-  const sender = await db.query.users.findFirst({
-    where: eq(users.id, userId),
-  });
-
-  if (!sender) return c.json({ error: "User not found" }, 404);
-
-  try {
-    const pdfBuffer = await generateInvoicePDF({ invoice, sender });
-
-    const filename = `${invoice.invoiceNumber}.pdf`;
-
-    return c.body(new Uint8Array(pdfBuffer), 200, {
-      "Content-Type": "application/pdf",
-      "Content-Disposition": `attachment; filename="${filename}"`,
-      "Content-Length": pdfBuffer.length.toString(),
-    });
-  } catch (err) {
-    console.error("PDF generation error:", err);
-    return c.json({ error: "Failed to generate PDF" }, 500);
-  }
-});
-
-// POST /invoices — creates the invoice and its line items in one transaction
-// so we never end up with an invoice that has no items or vice versa
-invoicesRouter.post("/", zValidator("json", createInvoiceSchema), async (c) => {
-  const userId = c.get("userId");
-  const body = c.req.valid("json");
-
-  const client = await db.query.clients.findFirst({
-    where: and(eq(clients.id, body.clientId), eq(clients.userId, userId)),
-  });
-
-  if (!client) {
-    return c.json({ error: "Client not found" }, 404);
-  }
-
-  const invoiceNumber = await generateInvoiceNumber(userId);
-  const totalAmount = calculateTotal(body.items);
-  const invoiceId = crypto.randomUUID();
-
-  await db.transaction(async (tx) => {
-    await tx.insert(invoices).values({
-      id: invoiceId,
-      userId,
-      clientId: body.clientId,
-      invoiceNumber,
-      status: "draft",
-      issueDate: new Date(body.issueDate),
-      dueDate: new Date(body.dueDate),
-      totalAmount: totalAmount.toFixed(2),
-      notes: body.notes,
-    });
-
-    await tx.insert(invoiceItems).values(
-      body.items.map((item) => ({
-        id: crypto.randomUUID(),
-        invoiceId,
-        description: item.description,
-        quantity: item.quantity.toString(),
-        rate: item.rate.toString(),
-        amount: (item.quantity * item.rate).toFixed(2),
-      })),
-    );
-  });
-
-  const created = await db.query.invoices.findFirst({
-    where: eq(invoices.id, invoiceId),
-    with: { items: true, client: true },
-  });
-
-  return c.json(
-    { data: created, message: "Invoice created successfully" },
-    201,
   );
-});
+  invoicesRouter.post(
+    "/:id/payments",
+    zValidator("param", z.object({ id: z.string().uuid() })),
+    zValidator("json", offlinePaymentSchema),
+    async (c) => {
+      const result = await recordOfflinePayment(
+        db,
+        c.get("userId"),
+        c.req.valid("param").id,
+        c.req.header("Idempotency-Key") ?? "",
+        c.req.valid("json"),
+      );
+      return c.json(
+        { data: paymentView(result.payment), duplicate: result.duplicate },
+        result.duplicate ? 200 : 201,
+      );
+    },
+  );
+  invoicesRouter.post(
+    "/:id/payments/reconcile",
+    zValidator("param", z.object({ id: z.string().uuid() })),
+    zValidator(
+      "json",
+      z
+        .object({ reference: z.string().regex(/^[A-Za-z0-9.=_-]{1,200}$/) })
+        .strict(),
+    ),
+    async (c) => {
+      const invoiceId = c.req.valid("param").id;
+      const userId = c.get("userId");
+      const invoice = await db.query.invoices.findFirst({
+        where: and(
+          eq(invoices.id, invoiceId),
+          eq(invoices.userId, userId),
+          isNull(invoices.deletedAt),
+        ),
+      });
+      if (!invoice) return c.json({ error: "Invoice not found" }, 404);
+      const quota = await consumeRateLimit(
+        db,
+        `payment-reconciliation:${userId}`,
+        10,
+        60,
+      );
+      if (!quota.allowed) {
+        c.header("Retry-After", String(quota.retryAfter));
+        return c.json({ error: "Too many payment verification requests" }, 429);
+      }
+      const charge = await verifyPayment(c.req.valid("json").reference);
+      const metadata = z
+        .object({ invoice_id: z.literal(invoiceId) })
+        .safeParse(charge.metadata);
+      if (!metadata.success)
+        return c.json(
+          { error: "Payment does not belong to this invoice" },
+          422,
+        );
+      try {
+        const result = await recordPaystackPayment(db, charge);
+        return c.json({ result });
+      } catch (error) {
+        if (error instanceof PaymentConflict)
+          return c.json({ error: error.message }, 409);
+        throw error;
+      }
+    },
+  );
 
-// PUT /invoices/:id — if items are provided, old items are replaced wholesale
-invoicesRouter.put(
-  "/:id",
-  zValidator("json", updateInvoiceSchema),
-  async (c) => {
+  const lineItemSchema = z.object({
+    description: z.string().min(1, "Description is required").max(500),
+    quantity: z
+      .number()
+      .positive("Quantity must be positive")
+      .max(99_999_999.99)
+      .multipleOf(0.01),
+    rate: z
+      .number()
+      .positive("Rate must be positive")
+      .max(99_999_999.99)
+      .multipleOf(0.01),
+  });
+
+  const createInvoiceSchema = z.object({
+    clientId: z.string().uuid("Invalid client ID"),
+    issueDate: z.string().datetime({ message: "Invalid issue date" }),
+    dueDate: z.string().datetime({ message: "Invalid due date" }),
+    notes: z.string().max(5000).optional(),
+    items: z
+      .array(lineItemSchema)
+      .min(1, "At least one line item is required")
+      .max(100),
+  });
+
+  const updateInvoiceSchema = z.object({
+    clientId: z.string().uuid().optional(),
+    issueDate: z.string().datetime().optional(),
+    dueDate: z.string().datetime().optional(),
+    notes: z.string().max(5000).optional(),
+    items: z.array(lineItemSchema).min(1).max(100).optional(),
+  });
+
+  const updateStatusSchema = z.object({
+    status: z.enum(["draft", "sent", "paid", "overdue"]),
+  });
+
+  invoicesRouter.get("/", async (c) => {
+    const userId = c.get("userId");
+    const query = listQuery(c.req.url, true);
+    const { search, status } = query;
+
+    const results = await db
+      .select({
+        id: invoices.id,
+        cursorTime: cursorTime(invoices.createdAt),
+        invoiceNumber: invoices.invoiceNumber,
+        status: invoices.status,
+        issueDate: invoices.issueDate,
+        dueDate: invoices.dueDate,
+        totalAmount: invoices.totalAmount,
+        notes: invoices.notes,
+        pdfUrl: invoices.pdfUrl,
+        stripePaymentLink: invoices.stripePaymentLink,
+        createdAt: invoices.createdAt,
+        updatedAt: invoices.updatedAt,
+        clientId: invoices.clientId,
+        clientName: invoiceClientName,
+        clientEmail: sql<string>`CASE WHEN ${invoices.identitySnapshot} IS NULL THEN ${clients.email} ELSE ${invoices.identitySnapshot}->'client'->>'email' END`,
+        clientCompany: sql<
+          string | null
+        >`CASE WHEN ${invoices.identitySnapshot} IS NULL THEN ${clients.companyName} ELSE ${invoices.identitySnapshot}->'client'->>'companyName' END`,
+      })
+      .from(invoices)
+      .leftJoin(clients, eq(invoices.clientId, clients.id))
+      .where(
+        and(
+          eq(invoices.userId, userId),
+          isNull(invoices.deletedAt),
+          beforeCursor(invoices.createdAt, invoices.id, query.cursor),
+          status ? eq(invoices.status, status) : undefined,
+          query.clientId ? eq(invoices.clientId, query.clientId) : undefined,
+          search
+            ? or(
+                ilike(invoices.invoiceNumber, searchPattern(search)),
+                sql`${invoiceClientName} ILIKE ${searchPattern(search)}`,
+              )
+            : undefined,
+        ),
+      )
+      .orderBy(desc(invoices.createdAt), desc(invoices.id))
+      .limit(query.limit + 1);
+
+    return c.json(listPage(results, query.limit));
+  });
+
+  // GET /invoices/trash — soft-deleted invoices. Has to come before GET /:id
+  // or "trash" gets matched as an invoice ID.
+  invoicesRouter.get("/trash", async (c) => {
+    const userId = c.get("userId");
+    const query = listQuery(c.req.url, true);
+    const { search, status } = query;
+
+    const results = await db
+      .select({
+        id: invoices.id,
+        cursorTime: cursorTime(invoices.deletedAt),
+        invoiceNumber: invoices.invoiceNumber,
+        status: invoices.status,
+        issueDate: invoices.issueDate,
+        dueDate: invoices.dueDate,
+        totalAmount: invoices.totalAmount,
+        deletedAt: invoices.deletedAt,
+        clientId: invoices.clientId,
+        clientName: invoiceClientName,
+        clientEmail: sql<string>`CASE WHEN ${invoices.identitySnapshot} IS NULL THEN ${clients.email} ELSE ${invoices.identitySnapshot}->'client'->>'email' END`,
+      })
+      .from(invoices)
+      .leftJoin(clients, eq(invoices.clientId, clients.id))
+      .where(
+        and(
+          eq(invoices.userId, userId),
+          isNotNull(invoices.deletedAt),
+          beforeCursor(invoices.deletedAt, invoices.id, query.cursor),
+          status ? eq(invoices.status, status) : undefined,
+          query.clientId ? eq(invoices.clientId, query.clientId) : undefined,
+          search
+            ? or(
+                ilike(invoices.invoiceNumber, searchPattern(search)),
+                sql`${invoiceClientName} ILIKE ${searchPattern(search)}`,
+              )
+            : undefined,
+        ),
+      )
+      .orderBy(desc(invoices.deletedAt), desc(invoices.id))
+      .limit(query.limit + 1);
+
+    return c.json(listPage(results, query.limit));
+  });
+
+  // GET /invoices/:id — single invoice with line items and client
+  invoicesRouter.get("/:id", async (c) => {
     const userId = c.get("userId");
     const invoiceId = c.req.param("id");
-    const body = c.req.valid("json");
 
-    const existing = await db.query.invoices.findFirst({
-      where: and(eq(invoices.id, invoiceId), eq(invoices.userId, userId)),
+    const invoice = await db.query.invoices.findFirst({
+      where: and(
+        eq(invoices.id, invoiceId),
+        eq(invoices.userId, userId),
+        isNull(invoices.deletedAt),
+      ),
+      with: {
+        items: true,
+        client: true,
+      },
     });
 
-    if (!existing) {
+    if (!invoice) {
       return c.json({ error: "Invoice not found" }, 404);
     }
 
-    if (body.clientId) {
-      const client = await db.query.clients.findFirst({
-        where: and(eq(clients.id, body.clientId), eq(clients.userId, userId)),
+    return c.json({ data: invoiceWithIdentity(invoice) });
+  });
+
+  // GET /invoices/:id/pdf — streams the invoice as a PDF download
+  invoicesRouter.get("/:id/pdf", async (c) => {
+    const userId = c.get("userId");
+    const invoiceId = c.req.param("id");
+
+    const invoice = await db.query.invoices.findFirst({
+      where: and(
+        eq(invoices.id, invoiceId),
+        eq(invoices.userId, userId),
+        isNull(invoices.deletedAt),
+      ),
+      with: { items: true, client: true },
+    });
+
+    if (!invoice) return c.json({ error: "Invoice not found" }, 404);
+
+    // needed for logo, business name, contact details on the PDF
+    const sender = await db.query.users.findFirst({
+      where: eq(users.id, userId),
+    });
+
+    if (!sender) return c.json({ error: "User not found" }, 404);
+
+    try {
+      const quota = await consumeRateLimit(db, `invoice-pdf:${userId}`, 10, 60);
+      if (!quota.allowed) {
+        c.header("Retry-After", String(quota.retryAfter));
+        return c.json(
+          { error: "Too many PDF requests. Please try again later" },
+          429,
+        );
+      }
+      const pdfBuffer = await renderPdf({
+        invoice: invoiceWithIdentity(invoice),
+        sender: { ...sender, ...invoice.identitySnapshot?.sender },
       });
-      if (!client) return c.json({ error: "Client not found" }, 404);
+
+      const filename = `${invoice.invoiceNumber.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80) || "invoice"}.pdf`;
+
+      return c.body(new Uint8Array(pdfBuffer), 200, {
+        "Content-Type": "application/pdf",
+        "Content-Disposition": `attachment; filename="${filename}"`,
+        "Content-Length": pdfBuffer.length.toString(),
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+      });
+    } catch (err) {
+      if (err instanceof HTTPException) {
+        if (err.status === 503) c.header("Retry-After", "5");
+        return c.json({ error: err.message }, err.status);
+      }
+      reportError("pdf.failed", err);
+      return c.json({ error: "Failed to generate PDF" }, 500);
     }
+  });
 
-    await db.transaction(async (tx) => {
-      const newTotal = body.items ? calculateTotal(body.items) : undefined;
+  // POST /invoices — creates the invoice and its line items in one transaction
+  // so we never end up with an invoice that has no items or vice versa
+  invoicesRouter.post(
+    "/",
+    zValidator("json", createInvoiceSchema),
+    async (c) => {
+      const userId = c.get("userId");
+      const body = c.req.valid("json");
 
+      const created = await createDraftInvoice(db, userId, body);
+
+      return c.json(
+        { data: created, message: "Invoice created successfully" },
+        201,
+      );
+    },
+  );
+
+  // PUT /invoices/:id — if items are provided, old items are replaced wholesale
+  invoicesRouter.put(
+    "/:id",
+    zValidator("json", updateInvoiceSchema),
+    async (c) => {
+      const userId = c.get("userId");
+      const invoiceId = c.req.param("id");
+      const body = c.req.valid("json");
+
+      const updated = await updateDraftInvoice(db, userId, invoiceId, body);
+
+      return c.json({ data: updated, message: "Invoice updated successfully" });
+    },
+  );
+
+  // Paid invoices are final; drafts must go through Send.
+  invoicesRouter.patch(
+    "/:id/status",
+    zValidator("json", updateStatusSchema),
+    async (c) => {
+      const userId = c.get("userId");
+      const invoiceId = c.req.param("id");
+      const { status } = c.req.valid("json");
+
+      const updated = await changeInvoiceStatus(db, userId, invoiceId, status);
+
+      return c.json({ data: updated, message: `Invoice marked as ${status}` });
+    },
+  );
+
+  // POST /invoices/:id/send — creates a payment link and starts email delivery.
+  invoicesRouter.post("/:id/send", async (c) => {
+    const userId = c.get("userId");
+    const invoiceId = c.req.param("id");
+
+    const delivery = await db.transaction(async (tx) => {
+      await lockOwnedInvoice(tx, userId, invoiceId);
+      const invoice = await tx.query.invoices.findFirst({
+        where: and(
+          eq(invoices.id, invoiceId),
+          eq(invoices.userId, userId),
+          isNull(invoices.deletedAt),
+        ),
+        with: { client: true, items: true },
+      });
+
+      if (!invoice)
+        throw new HTTPException(404, { message: "Invoice not found" });
+      if (
+        invoice.status !== "draft" ||
+        invoice.stripePaymentLink ||
+        (await tx.query.payments.findFirst({
+          where: (table, { eq }) => eq(table.invoiceId, invoiceId),
+        }))
+      ) {
+        throw new HTTPException(409, {
+          message: "Only draft invoices can be sent",
+        });
+      }
+
+      const [user] = await tx
+        .select()
+        .from(users)
+        .where(eq(users.id, userId))
+        .for("share");
+      if (!user) throw new HTTPException(404, { message: "User not found" });
+      const [customer] = await tx
+        .select()
+        .from(clients)
+        .where(eq(clients.id, invoice.clientId))
+        .for("share");
+      if (!customer)
+        throw new HTTPException(404, { message: "Client not found" });
+      invoice.client = customer;
+
+      // Configured online payments must use the invoice owner's saved payout route.
+      const paymentLink = process.env.PAYSTACK_SECRET_KEY
+        ? await initializeCheckout(tx, userId, invoice, invoice.client.email)
+        : null;
+
+      // Issuing the invoice and queueing its email must commit together.
       await tx
         .update(invoices)
         .set({
-          ...(body.clientId && { clientId: body.clientId }),
-          ...(body.issueDate && { issueDate: new Date(body.issueDate) }),
-          ...(body.dueDate && { dueDate: new Date(body.dueDate) }),
-          ...(body.notes !== undefined && { notes: body.notes }),
-          ...(newTotal !== undefined && { totalAmount: newTotal.toFixed(2) }),
+          status: "sent",
+          ...(paymentLink && { stripePaymentLink: paymentLink }),
           updatedAt: new Date(),
         })
         .where(and(eq(invoices.id, invoiceId), eq(invoices.userId, userId)));
 
-      if (body.items) {
-        await tx
-          .delete(invoiceItems)
-          .where(eq(invoiceItems.invoiceId, invoiceId));
-        await tx.insert(invoiceItems).values(
-          body.items.map((item) => ({
-            id: crypto.randomUUID(),
-            invoiceId,
-            description: item.description,
-            quantity: item.quantity.toString(),
-            rate: item.rate.toString(),
-            amount: (item.quantity * item.rate).toFixed(2),
-          })),
-        );
-      }
+      const updated = await tx.query.invoices.findFirst({
+        where: eq(invoices.id, invoiceId),
+        with: { items: true, client: true },
+      });
+
+      const issued = invoiceWithIdentity(updated!);
+      const sender = issued.identitySnapshot!.sender;
+      const senderName = sender.businessName ?? sender.fullName;
+      const email = await enqueueEmail(tx, {
+        userId,
+        invoiceId,
+        purpose: "invoice",
+        message: {
+          to: issued.client.email,
+          subject: `Invoice ${invoice.invoiceNumber} from ${senderName} — ₦${Number(invoice.totalAmount).toLocaleString("en-NG")}`,
+          html: buildInvoiceEmail({ invoice: issued, senderName, paymentLink }),
+        },
+      });
+      return { updated: issued, email };
     });
+    return c.json(
+      {
+        data: delivery.updated,
+        email: delivery.email,
+        message: "Invoice issued; email queued",
+      },
+      202,
+    );
+  });
 
-    const updated = await db.query.invoices.findFirst({
-      where: eq(invoices.id, invoiceId),
-      with: { items: true, client: true },
-    });
-
-    return c.json({ data: updated, message: "Invoice updated successfully" });
-  },
-);
-
-// PATCH /invoices/:id/status — draft→sent, sent→paid, etc.
-invoicesRouter.patch(
-  "/:id/status",
-  zValidator("json", updateStatusSchema),
-  async (c) => {
+  // POST /invoices/:id/resend — re-sends the email for a non-draft invoice
+  // without touching its status, for when a client says they never got it
+  invoicesRouter.post("/:id/resend", async (c) => {
     const userId = c.get("userId");
     const invoiceId = c.req.param("id");
-    const { status } = c.req.valid("json");
+    const email = await db.transaction(async (tx) => {
+      await lockOwnedInvoice(tx, userId, invoiceId);
+      const invoice = await tx.query.invoices.findFirst({
+        where: and(
+          eq(invoices.id, invoiceId),
+          eq(invoices.userId, userId),
+          isNull(invoices.deletedAt),
+        ),
+        with: { client: true, items: true },
+      });
+
+      if (!invoice)
+        throw new HTTPException(404, { message: "Invoice not found" });
+      if (invoice.status === "draft") {
+        throw new HTTPException(400, {
+          message: "Draft invoices must be sent first, not resent",
+        });
+      }
+      const latest = await tx.query.emailJobs.findFirst({
+        where: eq(emailJobs.invoiceId, invoiceId),
+        orderBy: desc(emailJobs.createdAt),
+      });
+      if (
+        latest &&
+        latest.expiresAt > new Date() &&
+        ["pending", "processing"].includes(latest.status)
+      )
+        return { id: latest.id, status: latest.status };
+      if (latest && Date.now() - latest.createdAt.getTime() < 60_000)
+        throw new HTTPException(429, {
+          message: "Please wait one minute before resending this invoice",
+        });
+      const user = await tx.query.users.findFirst({
+        where: eq(users.id, userId),
+      });
+      if (!user) throw new HTTPException(404, { message: "User not found" });
+
+      const issued = invoiceWithIdentity(invoice);
+      const sender = issued.identitySnapshot?.sender ?? user;
+      const senderName = sender.businessName ?? sender.fullName;
+      const paymentLink = invoice.stripePaymentLink ?? null;
+
+      return enqueueEmail(tx, {
+        userId,
+        invoiceId,
+        purpose: "invoice",
+        message: {
+          to: issued.client.email,
+          subject: `Invoice ${invoice.invoiceNumber} from ${senderName} — ₦${Number(invoice.totalAmount).toLocaleString("en-NG")}`,
+          html: buildInvoiceEmail({ invoice: issued, senderName, paymentLink }),
+        },
+      });
+    });
+    return c.json({ email, message: "Invoice email queued" }, 202);
+  });
+
+  invoicesRouter.get("/:id/email-deliveries", async (c) => {
+    const invoice = await db.query.invoices.findFirst({
+      where: and(
+        eq(invoices.id, c.req.param("id")),
+        eq(invoices.userId, c.get("userId")),
+      ),
+    });
+    if (!invoice)
+      throw new HTTPException(404, { message: "Invoice not found" });
+    const jobs = await db
+      .select({
+        id: emailJobs.id,
+        status: emailJobs.status,
+        attempts: emailJobs.attempts,
+        acceptedAt: emailJobs.acceptedAt,
+        createdAt: emailJobs.createdAt,
+        lastError: emailJobs.lastError,
+      })
+      .from(emailJobs)
+      .where(eq(emailJobs.invoiceId, invoice.id))
+      .orderBy(desc(emailJobs.createdAt))
+      .limit(20);
+    return c.json({ data: jobs });
+  });
+
+  // DELETE /invoices/:id — moves the invoice to Trash until restored or permanently deleted.
+  invoicesRouter.delete("/:id", async (c) => {
+    const userId = c.get("userId");
+    const invoiceId = c.req.param("id");
 
     const existing = await db.query.invoices.findFirst({
-      where: and(eq(invoices.id, invoiceId), eq(invoices.userId, userId)),
+      where: and(
+        eq(invoices.id, invoiceId),
+        eq(invoices.userId, userId),
+        isNull(invoices.deletedAt),
+      ),
     });
 
     if (!existing) {
       return c.json({ error: "Invoice not found" }, 404);
     }
 
-    const [updated] = await db
+    await db
       .update(invoices)
-      .set({ status, updatedAt: new Date() })
-      .where(and(eq(invoices.id, invoiceId), eq(invoices.userId, userId)))
-      .returning();
+      .set({ deletedAt: new Date(), updatedAt: new Date() })
+      .where(and(eq(invoices.id, invoiceId), eq(invoices.userId, userId)));
 
-    return c.json({ data: updated, message: `Invoice marked as ${status}` });
-  },
-);
-
-// POST /invoices/:id/send — creates a Paystack payment link, marks the invoice
-// sent, and fires the email in the background so Render's 90s gateway timeout
-// can't cut the request off mid-send.
-invoicesRouter.post("/:id/send", async (c) => {
-  const userId = c.get("userId");
-  const invoiceId = c.req.param("id");
-
-  const invoice = await db.query.invoices.findFirst({
-    where: and(eq(invoices.id, invoiceId), eq(invoices.userId, userId)),
-    with: { client: true, items: true },
+    return c.json({ message: "Invoice moved to Trash" });
   });
 
-  if (!invoice) return c.json({ error: "Invoice not found" }, 404);
-  if (invoice.status !== "draft") {
-    return c.json({ error: "Only draft invoices can be sent" }, 400);
-  }
+  // POST /invoices/:id/restore
+  invoicesRouter.post("/:id/restore", async (c) => {
+    const userId = c.get("userId");
+    const invoiceId = c.req.param("id");
 
-  const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
-  if (!user) return c.json({ error: "User not found" }, 404);
+    const existing = await db.query.invoices.findFirst({
+      where: and(
+        eq(invoices.id, invoiceId),
+        eq(invoices.userId, userId),
+        isNotNull(invoices.deletedAt),
+      ),
+    });
 
-  // Generate the Paystack link with an 8s timeout so a slow/unresponsive
-  // Paystack never hangs the request — non-fatal, we just send without a
-  // link if it fails.
-  let paymentLink: string | null = null;
-
-  const paystackKey = process.env.PAYSTACK_SECRET_KEY;
-  if (paystackKey) {
-    const controller = new AbortController();
-    const paystackTimeout = setTimeout(() => controller.abort(), 8_000);
-
-    try {
-      const amountInKobo = Math.round(Number(invoice.totalAmount) * 100); // 1 NGN = 100 kobo
-
-      const paystackRes = await fetch(
-        "https://api.paystack.co/transaction/initialize",
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${paystackKey}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            email: invoice.client.email,
-            amount: amountInKobo,
-            reference: `BILLD-${invoice.invoiceNumber}-${Date.now()}`,
-            metadata: {
-              invoice_id: invoice.id,
-              invoice_number: invoice.invoiceNumber,
-              client_name: invoice.client.name,
-            },
-          }),
-          signal: controller.signal,
-        },
-      );
-
-      if (paystackRes.ok) {
-        const paystackData = (await paystackRes.json()) as {
-          status: boolean;
-          data: { authorization_url: string; reference: string };
-        };
-        if (paystackData.status) {
-          paymentLink = paystackData.data.authorization_url;
-        }
-      }
-    } catch (err) {
-      console.error("[send] Paystack error (non-fatal):", err);
-    } finally {
-      clearTimeout(paystackTimeout);
+    if (!existing) {
+      return c.json({ error: "Invoice not found in Trash" }, 404);
     }
-  }
 
-  // Update the invoice before returning, so the DB stays consistent even if
-  // the background email fails, and so a gateway-timeout retry doesn't hit
-  // "Only draft invoices can be sent" on the second attempt.
-  await db
-    .update(invoices)
-    .set({
-      status: "sent",
-      ...(paymentLink && { stripePaymentLink: paymentLink }),
-      updatedAt: new Date(),
-    })
-    .where(and(eq(invoices.id, invoiceId), eq(invoices.userId, userId)));
+    await db
+      .update(invoices)
+      .set({ deletedAt: null, updatedAt: new Date() })
+      .where(and(eq(invoices.id, invoiceId), eq(invoices.userId, userId)));
 
-  const updated = await db.query.invoices.findFirst({
-    where: eq(invoices.id, invoiceId),
-    with: { items: true, client: true },
+    return c.json({ message: "Invoice restored successfully" });
   });
 
-  // Not awaited — the response is already on its way back, Bun keeps the
-  // process alive long enough to finish sending the email out-of-band.
-  // `from` is omitted so email.ts falls back to the Resend sandbox sender;
-  // set RESEND_FROM once a custom domain is verified.
-  const senderName = user.businessName ?? user.fullName;
+  // DELETE /invoices/:id/permanent — irreversible, items cascade-delete via the DB
+  invoicesRouter.delete("/:id/permanent", async (c) => {
+    const userId = c.get("userId");
+    const invoiceId = c.req.param("id");
 
-  sendMail({
-    to: invoice.client.email,
-    subject: `Invoice ${invoice.invoiceNumber} from ${senderName} — ₦${Number(invoice.totalAmount).toLocaleString("en-NG")}`,
-    html: buildInvoiceEmail({ invoice, senderName, paymentLink }),
-  }).catch((err) => {
-    console.error("[send] Background email failed:", err);
+    await permanentlyDeleteDraftInvoice(db, userId, invoiceId);
+
+    return c.json({ message: "Invoice permanently deleted" });
   });
 
-  return c.json({ data: updated, message: "Invoice sent successfully" });
-});
-
-// POST /invoices/:id/resend — re-sends the email for a non-draft invoice
-// without touching its status, for when a client says they never got it
-invoicesRouter.post("/:id/resend", async (c) => {
-  const userId = c.get("userId");
-  const invoiceId = c.req.param("id");
-
-  const invoice = await db.query.invoices.findFirst({
-    where: and(eq(invoices.id, invoiceId), eq(invoices.userId, userId)),
-    with: { client: true, items: true },
-  });
-
-  if (!invoice) return c.json({ error: "Invoice not found" }, 404);
-  if (invoice.status === "draft") {
-    return c.json(
-      { error: "Draft invoices must be sent first, not resent" },
-      400,
-    );
-  }
-
-  const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
-  if (!user) return c.json({ error: "User not found" }, 404);
-
-  const senderName = user.businessName ?? user.fullName;
-  const paymentLink = invoice.stripePaymentLink ?? null;
-
-  sendMail({
-    to: invoice.client.email,
-    subject: `Invoice ${invoice.invoiceNumber} from ${senderName} — ₦${Number(invoice.totalAmount).toLocaleString("en-NG")}`,
-    html: buildInvoiceEmail({ invoice, senderName, paymentLink }),
-  }).catch((err) => {
-    console.error("[resend] Background email failed:", err);
-  });
-
-  return c.json({ message: "Invoice resent successfully" });
-});
-
-// DELETE /invoices/:id — soft delete, moves to Trash, restorable for 30 days
-invoicesRouter.delete("/:id", async (c) => {
-  const userId = c.get("userId");
-  const invoiceId = c.req.param("id");
-
-  const existing = await db.query.invoices.findFirst({
-    where: and(
-      eq(invoices.id, invoiceId),
-      eq(invoices.userId, userId),
-      isNull(invoices.deletedAt),
-    ),
-  });
-
-  if (!existing) {
-    return c.json({ error: "Invoice not found" }, 404);
-  }
-
-  await db
-    .update(invoices)
-    .set({ deletedAt: new Date(), updatedAt: new Date() })
-    .where(and(eq(invoices.id, invoiceId), eq(invoices.userId, userId)));
-
-  return c.json({ message: "Invoice moved to Trash" });
-});
-
-// POST /invoices/:id/restore
-invoicesRouter.post("/:id/restore", async (c) => {
-  const userId = c.get("userId");
-  const invoiceId = c.req.param("id");
-
-  const existing = await db.query.invoices.findFirst({
-    where: and(
-      eq(invoices.id, invoiceId),
-      eq(invoices.userId, userId),
-      isNotNull(invoices.deletedAt),
-    ),
-  });
-
-  if (!existing) {
-    return c.json({ error: "Invoice not found in Trash" }, 404);
-  }
-
-  await db
-    .update(invoices)
-    .set({ deletedAt: null, updatedAt: new Date() })
-    .where(and(eq(invoices.id, invoiceId), eq(invoices.userId, userId)));
-
-  return c.json({ message: "Invoice restored successfully" });
-});
-
-// DELETE /invoices/:id/permanent — irreversible, items cascade-delete via the DB
-invoicesRouter.delete("/:id/permanent", async (c) => {
-  const userId = c.get("userId");
-  const invoiceId = c.req.param("id");
-
-  const existing = await db.query.invoices.findFirst({
-    where: and(
-      eq(invoices.id, invoiceId),
-      eq(invoices.userId, userId),
-      isNotNull(invoices.deletedAt),
-    ),
-  });
-
-  if (!existing) {
-    return c.json({ error: "Invoice not found in Trash" }, 404);
-  }
-
-  await db
-    .delete(invoices)
-    .where(and(eq(invoices.id, invoiceId), eq(invoices.userId, userId)));
-
-  return c.json({ message: "Invoice permanently deleted" });
-});
+  return invoicesRouter;
+}
 
 // invoice email template
 type InvoiceWithRelations = typeof invoices.$inferSelect & {
@@ -571,6 +660,28 @@ function buildInvoiceEmail({
   senderName: string;
   paymentLink: string | null;
 }): string {
+  senderName = escapeEmailHtml(senderName);
+  invoice = {
+    ...invoice,
+    invoiceNumber: escapeEmailHtml(invoice.invoiceNumber),
+    notes: invoice.notes ? escapeEmailHtml(invoice.notes) : null,
+    client: {
+      ...invoice.client,
+      name: escapeEmailHtml(invoice.client.name),
+      email: escapeEmailHtml(invoice.client.email),
+      companyName: invoice.client.companyName
+        ? escapeEmailHtml(invoice.client.companyName)
+        : null,
+    },
+    items: invoice.items.map((item) => ({
+      ...item,
+      description: escapeEmailHtml(item.description),
+    })),
+  };
+  if (paymentLink) {
+    const url = new URL(paymentLink);
+    paymentLink = url.protocol === "https:" ? escapeEmailHtml(url.href) : null;
+  }
   const fmt = (n: number | string) =>
     `₦${Number(n).toLocaleString("en-NG", { minimumFractionDigits: 2 })}`;
 
@@ -738,4 +849,4 @@ function buildInvoiceEmail({
 </html>`;
 }
 
-export default invoicesRouter;
+export default createInvoicesRouter();

@@ -29,6 +29,69 @@
       "when": 1746100000000,
       "tag": "0003_password_reset_tokens",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1795219200000,
+      "tag": "0004_invoice_integrity",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1795219200001,
+      "tag": "0005_session_integrity",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1795262235053,
+      "tag": "0006_request_security",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1795263891152,
+      "tag": "0007_email_verification_and_delivery",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1795266972756,
+      "tag": "0008_audit_events",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1795307795583,
+      "tag": "0009_list_pagination",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1795378809321,
+      "tag": "0010_payment_history",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1795381156905,
+      "tag": "0011_invoice_identity",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1795516383625,
+      "tag": "0012_payout_routing",
+      "breakpoints": true
     }
   ]
 }

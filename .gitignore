@@ -12,9 +12,16 @@ build
 .env.local
 .env.production
 .env.development
+.env.recovery
 
 # Drizzle migrations (keep generated folder but not DB secrets)
 # drizzle/  ← keep this tracked
+
+# Database backups
+backups/
+*.billd-backup
+*.dump
+*.sql.gz
 
 # Logs
 *.log

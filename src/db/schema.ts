@@ -5,10 +5,16 @@ import {
   numeric,
   boolean,
   pgEnum,
+  bigint,
+  unique,
+  check,
+  index,
+  integer,
+  uniqueIndex,
+  jsonb,
 } from "drizzle-orm/pg-core";
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 
-// Enums
 export const invoiceStatusEnum = pgEnum("invoice_status", [
   "draft",
   "sent",
@@ -16,7 +22,28 @@ export const invoiceStatusEnum = pgEnum("invoice_status", [
   "overdue",
 ]);
 
-// Users
+export const auditEvents = pgTable(
+  "audit_events",
+  {
+    id: text("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()::text`),
+    ownerId: text("owner_id").notNull(),
+    action: text("action").notNull(),
+    resourceId: text("resource_id").notNull(),
+    details: jsonb("details").$type<Record<string, string | null>>().notNull(),
+    occurredAt: timestamp("occurred_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => ({
+    ownerTime: index("audit_events_owner_time_idx").on(
+      table.ownerId,
+      table.occurredAt,
+    ),
+  }),
+);
+
 export const users = pgTable("users", {
   id: text("id").primaryKey(),
   email: text("email").notNull().unique(),
@@ -24,6 +51,8 @@ export const users = pgTable("users", {
   passwordHash: text("password_hash"),
   fullName: text("full_name").notNull(),
   googleId: text("google_id").unique(),
+  sessionVersion: integer("session_version").notNull().default(0),
+  emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
   businessName: text("business_name"),
   logoUrl: text("logo_url"),
   address: text("address"),
@@ -32,68 +61,184 @@ export const users = pgTable("users", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
+export const payoutAccounts = pgTable(
+  "payout_accounts",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    mode: text("mode").notNull(),
+    status: text("status").notNull().default("pending"),
+    subaccountCode: text("subaccount_code"),
+    bankCode: text("bank_code").notNull(),
+    accountLast4: text("account_last4").notNull(),
+    accountName: text("account_name").notNull(),
+    requestHash: text("request_hash").notNull(),
+    keyFingerprint: text("key_fingerprint").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    ownerMode: unique("payout_accounts_owner_mode_unique").on(
+      table.userId,
+      table.mode,
+    ),
+    providerCode: unique("payout_accounts_mode_code_unique").on(
+      table.mode,
+      table.subaccountCode,
+    ),
+    validState: check(
+      "payout_accounts_state",
+      sql`${table.mode} IN ('test', 'live') AND ((${table.status} = 'pending' AND ${table.subaccountCode} IS NULL) OR (${table.status} = 'ready' AND ${table.subaccountCode} IS NOT NULL))`,
+    ),
+  }),
+);
+
 // Refresh tokens — stored so individual sessions can be revoked (logout, password change, etc.)
-export const refreshTokens = pgTable("refresh_tokens", {
-  id: text("id").primaryKey(),
-  userId: text("user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
-  tokenHash: text("token_hash").notNull().unique(),
-  expiresAt: timestamp("expires_at").notNull(),
-  revoked: boolean("revoked").default(false).notNull(),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+export const refreshTokens = pgTable(
+  "refresh_tokens",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull().unique(),
+    sessionId: text("session_id").notNull(),
+    expiresAt: timestamp("expires_at").notNull(),
+    revoked: boolean("revoked").default(false).notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    activeSession: uniqueIndex("refresh_tokens_active_session_unique")
+      .on(table.sessionId)
+      .where(sql`${table.revoked} = false`),
+    userIndex: index("refresh_tokens_user_id_idx").on(table.userId),
+  }),
+);
 
 // Password reset tokens — one-time use, we only store the hash
 export const passwordResetTokens = pgTable("password_reset_tokens", {
   id: text("id").primaryKey(),
   userId: text("user_id")
     .notNull()
+    .unique()
     .references(() => users.id, { onDelete: "cascade" }),
   tokenHash: text("token_hash").notNull().unique(),
   expiresAt: timestamp("expires_at").notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
-// Clients
-export const clients = pgTable("clients", {
+export const clients = pgTable(
+  "clients",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    email: text("email").notNull(),
+    address: text("address"),
+    phone: text("phone"),
+    companyName: text("company_name"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    ownerPage: index("clients_owner_page_idx").on(
+      table.userId,
+      table.createdAt,
+      table.id,
+    ),
+  }),
+);
+
+export const emailVerificationTokens = pgTable("email_verification_tokens", {
   id: text("id").primaryKey(),
   userId: text("user_id")
     .notNull()
+    .unique()
     .references(() => users.id, { onDelete: "cascade" }),
-  name: text("name").notNull(),
   email: text("email").notNull(),
-  address: text("address"),
-  phone: text("phone"),
-  companyName: text("company_name"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  tokenHash: text("token_hash").notNull().unique(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
-// Invoices
-export const invoices = pgTable("invoices", {
-  id: text("id").primaryKey(),
-  userId: text("user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
-  clientId: text("client_id")
-    .notNull()
-    .references(() => clients.id, { onDelete: "cascade" }),
-  invoiceNumber: text("invoice_number").notNull().unique(), // e.g. INV-0001
-  status: invoiceStatusEnum("status").default("draft").notNull(),
-  issueDate: timestamp("issue_date").notNull(),
-  dueDate: timestamp("due_date").notNull(),
-  totalAmount: numeric("total_amount", { precision: 10, scale: 2 }).notNull(),
-  notes: text("notes"),
-  pdfUrl: text("pdf_url"), // Cloudinary URL
-  stripePaymentLink: text("stripe_payment_link"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
-  // soft delete — invoices stick around for 30 days after "deletion" so they can be restored
-  deletedAt: timestamp("deleted_at"),
-});
+export const invoiceCounters = pgTable(
+  "invoice_counters",
+  {
+    userId: text("user_id")
+      .primaryKey()
+      .references(() => users.id, { onDelete: "cascade" }),
+    lastNumber: bigint("last_number", { mode: "number" }).notNull().default(0),
+  },
+  (table) => ({
+    numberRange: check(
+      "invoice_counters_number_range",
+      sql`${table.lastNumber} between 0 and 9007199254740991`,
+    ),
+  }),
+);
 
-// Invoice items
+export type InvoiceIdentity = {
+  sender: Pick<
+    typeof users.$inferSelect,
+    "fullName" | "businessName" | "email" | "address" | "phone" | "logoUrl"
+  >;
+  client: Pick<
+    typeof clients.$inferSelect,
+    "name" | "companyName" | "email" | "address" | "phone"
+  >;
+  source: "issued" | "legacy_backfill";
+  capturedAt: string;
+};
+
+export const invoices = pgTable(
+  "invoices",
+  {
+    id: text("id").primaryKey(),
+    paystackRoutingRequired: boolean("paystack_routing_required")
+      .notNull()
+      .default(true),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    clientId: text("client_id")
+      .notNull()
+      .references(() => clients.id, { onDelete: "restrict" }),
+    invoiceNumber: text("invoice_number").notNull(), // e.g. INV-0001
+    status: invoiceStatusEnum("status").default("draft").notNull(),
+    issueDate: timestamp("issue_date").notNull(),
+    dueDate: timestamp("due_date").notNull(),
+    totalAmount: numeric("total_amount", { precision: 10, scale: 2 }).notNull(),
+    notes: text("notes"),
+    identitySnapshot: jsonb("identity_snapshot").$type<InvoiceIdentity>(),
+    pdfUrl: text("pdf_url"), // Reserved for a stored PDF URL.
+    stripePaymentLink: text("stripe_payment_link"), // Stores the Paystack checkout URL.
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+    // A timestamp moves the invoice to Trash; null keeps it active.
+    deletedAt: timestamp("deleted_at"),
+  },
+  (table) => ({
+    userInvoiceNumber: unique("invoices_user_invoice_number_unique").on(
+      table.userId,
+      table.invoiceNumber,
+    ),
+    deletedAtIndex: index("invoices_deleted_at_idx").on(table.deletedAt),
+    activePage: index("invoices_owner_active_page_idx")
+      .on(table.userId, table.createdAt, table.id)
+      .where(sql`${table.deletedAt} IS NULL`),
+    trashPage: index("invoices_owner_trash_page_idx")
+      .on(table.userId, table.deletedAt, table.id)
+      .where(sql`${table.deletedAt} IS NOT NULL`),
+  }),
+);
+
 export const invoiceItems = pgTable("invoice_items", {
   id: text("id").primaryKey(),
   invoiceId: text("invoice_id")
@@ -106,15 +251,57 @@ export const invoiceItems = pgTable("invoice_items", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
-// Payments
+export const paymentCheckouts = pgTable(
+  "payment_checkouts",
+  {
+    reference: text("reference").primaryKey(),
+    invoiceId: text("invoice_id")
+      .notNull()
+      .unique()
+      .references(() => invoices.id, { onDelete: "restrict" }),
+    payoutAccountId: text("payout_account_id")
+      .notNull()
+      .references(() => payoutAccounts.id, { onDelete: "restrict" }),
+    subaccountCode: text("subaccount_code").notNull(),
+    mode: text("mode").notNull(),
+    amountKobo: bigint("amount_kobo", { mode: "number" }).notNull(),
+    feeBearer: text("fee_bearer").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    validRouting: check(
+      "payment_checkouts_routing",
+      sql`${table.mode} IN ('test', 'live') AND ${table.feeBearer} IN ('account', 'subaccount') AND ${table.amountKobo} BETWEEN 1 AND 9007199254740991`,
+    ),
+  }),
+);
+
+export const requestRateLimits = pgTable(
+  "request_rate_limits",
+  {
+    key: text("key").primaryKey(),
+    attempts: integer("attempts").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  },
+  (table) => ({
+    expiryIndex: index("request_rate_limits_expiry_idx").on(table.expiresAt),
+  }),
+);
+
 export const payments = pgTable("payments", {
   id: text("id").primaryKey(),
   invoiceId: text("invoice_id")
     .notNull()
-    .references(() => invoices.id, { onDelete: "cascade" }),
+    .references(() => invoices.id, { onDelete: "restrict" }),
   amountPaid: numeric("amount_paid", { precision: 10, scale: 2 }).notNull(),
   paidAt: timestamp("paid_at").notNull(),
-  stripePaymentId: text("stripe_payment_id").unique(),
+  stripePaymentId: text("stripe_payment_id").unique(), // Stores the Paystack reference.
+  method: text("method").default("paystack").notNull(),
+  recordedBy: text("recorded_by"),
+  reference: text("reference"),
+  idempotencyKey: text("idempotency_key").unique(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -145,7 +332,50 @@ export const paymentsRelations = relations(payments, ({ one }) => ({
   }),
 }));
 
-// Inferred types
+export const emailJobs = pgTable(
+  "email_jobs",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    invoiceId: text("invoice_id").references(() => invoices.id, {
+      onDelete: "restrict",
+    }),
+    purpose: text("purpose", {
+      enum: ["verification", "password_reset", "invoice"],
+    }).notNull(),
+    tokenHash: text("token_hash"),
+    payload: text("payload"),
+    status: text("status", {
+      enum: ["pending", "processing", "accepted", "failed", "cancelled"],
+    })
+      .notNull()
+      .default("pending"),
+    attempts: integer("attempts").notNull().default(0),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lockedUntil: timestamp("locked_until", { withTimezone: true }),
+    claimId: text("claim_id"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    providerMessageId: text("provider_message_id"),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    readyIndex: index("email_jobs_ready_idx").on(
+      table.status,
+      table.nextAttemptAt,
+    ),
+    invoiceIndex: index("email_jobs_invoice_idx").on(table.invoiceId),
+    userIndex: index("email_jobs_user_idx").on(table.userId),
+  }),
+);
+
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type RefreshToken = typeof refreshTokens.$inferSelect;

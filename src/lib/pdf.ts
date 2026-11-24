@@ -1,7 +1,18 @@
-import puppeteer, { type Page } from "puppeteer";
+import puppeteer, { TimeoutError, type Browser } from "puppeteer";
+import { HTTPException } from "hono/http-exception";
+import { escapeEmailHtml as escapeHtml } from "./email";
+import { safePdfLogo } from "./pdf-logo";
 import type { Invoice, InvoiceItem, Client, User } from "../db/schema";
+import { invoiceWithIdentity } from "./invoice-identity";
 
-type PDFInput = {
+function withIdentity(input: PDFInput): PDFInput {
+  return {
+    invoice: invoiceWithIdentity(input.invoice),
+    sender: { ...input.sender, ...input.invoice.identitySnapshot?.sender },
+  };
+}
+
+export type PDFInput = {
   invoice: Invoice & {
     client: Client;
     items: InvoiceItem[];
@@ -30,13 +41,45 @@ const STATUS_STYLES: Record<
   { bg: string; color: string; label: string }
 > = {
   draft: { bg: "#1e293b", color: "#94a3b8", label: "DRAFT" },
-  sent: { bg: "rgba(37,99,235,.15)", color: "#60a5fa", label: "SENT" },
+  sent: { bg: "rgba(37,99,235,.15)", color: "#60a5fa", label: "ISSUED" },
   paid: { bg: "rgba(22,163,74,.15)", color: "#4ade80", label: "PAID" },
   overdue: { bg: "rgba(220,38,38,.15)", color: "#f87171", label: "OVERDUE" },
 };
 
-function buildHTML(input: PDFInput): string {
+export function buildInvoicePdfHtml(input: PDFInput): string {
+  input = withIdentity(input);
   const { invoice, sender } = input;
+  if (invoice.items.length > 100)
+    throw new HTTPException(422, {
+      message: "Invoice content exceeds PDF limits",
+    });
+  const text = [
+    invoice.invoiceNumber,
+    invoice.notes,
+    invoice.client.name,
+    invoice.client.companyName,
+    invoice.client.address,
+    invoice.client.phone,
+    invoice.client.email,
+    sender.fullName,
+    sender.businessName,
+    sender.address,
+    sender.phone,
+    sender.email,
+    invoice.stripePaymentLink,
+    ...invoice.items.map((item) => item.description),
+  ];
+  if (
+    invoice.items.length > 100 ||
+    text.reduce(
+      (size, value) => size + Buffer.byteLength(value ?? "", "utf8"),
+      0,
+    ) > 100_000
+  )
+    throw new HTTPException(422, {
+      message: "Invoice content exceeds PDF limits",
+    });
+  const logo = safePdfLogo(sender.logoUrl);
   const st = STATUS_STYLES[invoice.status] ?? STATUS_STYLES.draft;
 
   const isOverdue = invoice.status === "overdue";
@@ -44,15 +87,15 @@ function buildHTML(input: PDFInput): string {
   const subtotal = invoice.items.reduce((s, i) => s + Number(i.amount), 0);
   const senderName = sender.businessName ?? sender.fullName;
 
-  const logoHtml = sender.logoUrl
-    ? `<img src="${sender.logoUrl}" alt="Logo" class="logo-img" />`
-    : `<div class="logo-fallback">${senderName.slice(0, 2).toUpperCase()}</div>`;
+  const logoHtml = logo
+    ? `<img src="${logo}" alt="Logo" class="logo-img" />`
+    : `<div class="logo-fallback">${escapeHtml(senderName.slice(0, 2).toUpperCase())}</div>`;
 
   const itemRows = invoice.items
     .map(
       (item, idx) => `
     <tr class="${idx % 2 === 0 ? "row-even" : "row-odd"}">
-      <td class="td-desc">${item.description}</td>
+      <td class="td-desc">${escapeHtml(item.description)}</td>
       <td class="td-num">${Number(item.quantity)}</td>
       <td class="td-num">${fmtCurrency(item.rate)}</td>
       <td class="td-amt">${fmtCurrency(item.amount)}</td>
@@ -67,7 +110,7 @@ function buildHTML(input: PDFInput): string {
       <div class="payment-icon">⚡</div>
       <div class="payment-text">
         <p class="payment-title">Pay Online via Paystack</p>
-        <p class="payment-url">${invoice.stripePaymentLink}</p>
+        <p class="payment-url">${escapeHtml(invoice.stripePaymentLink)}</p>
       </div>
     </div>
   `
@@ -81,11 +124,12 @@ function buildHTML(input: PDFInput): string {
       : "";
 
   const senderDetails = [sender.address, sender.phone, sender.email]
-    .filter(Boolean)
+    .filter((value): value is string => Boolean(value))
+    .map(escapeHtml)
     .join("<br/>");
 
   const clientCompany = invoice.client.companyName
-    ? `<span class="biz">${invoice.client.companyName}</span>`
+    ? `<span class="biz">${escapeHtml(invoice.client.companyName)}</span>`
     : "";
 
   const clientDetails = [
@@ -93,13 +137,15 @@ function buildHTML(input: PDFInput): string {
     invoice.client.phone,
     invoice.client.email,
   ]
-    .filter(Boolean)
+    .filter((value): value is string => Boolean(value))
+    .map(escapeHtml)
     .join("<br/>");
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-src 'none'; object-src 'none'"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <style>
 /* reset */
@@ -396,6 +442,7 @@ thead th:not(:first-child) { text-align: right; }
 .row-odd  { background: #fafbfc; }
 
 .td-desc {
+  overflow-wrap: anywhere;
   padding: 15px 18px;
   font-size: 13.5px;
   font-weight: 500;
@@ -555,6 +602,7 @@ thead th:not(:first-child) { text-align: right; }
   font-size: 11px;
   font-family: "SF Mono", monospace;
 }
+.sender-name, .sender-details, .inv-number, .billing-name, .biz, .billing-info, .notes-text, .payment-url { overflow-wrap: anywhere; }
 </style>
 </head>
 <body>
@@ -570,12 +618,12 @@ ${watermark}
   <div class="header">
     <div class="header-left">
       ${logoHtml}
-      <p class="sender-name">${senderName}</p>
+      <p class="sender-name">${escapeHtml(senderName)}</p>
       ${senderDetails ? `<p class="sender-details">${senderDetails}</p>` : ""}
     </div>
     <div class="header-right">
       <p class="inv-word">Invoice</p>
-      <p class="inv-number">${invoice.invoiceNumber}</p>
+      <p class="inv-number">${escapeHtml(invoice.invoiceNumber)}</p>
       <span class="status-pill">${st.label}</span>
     </div>
   </div>
@@ -607,13 +655,13 @@ ${watermark}
       <!-- from -->
       <div class="billing-card">
         <p class="billing-tag">From</p>
-        <p class="billing-name">${senderName}</p>
+        <p class="billing-name">${escapeHtml(senderName)}</p>
         ${senderDetails ? `<p class="billing-info">${senderDetails}</p>` : ""}
       </div>
       <!-- to -->
       <div class="billing-card">
         <p class="billing-tag">Bill To</p>
-        <p class="billing-name">${invoice.client.name}</p>
+        <p class="billing-name">${escapeHtml(invoice.client.name)}</p>
         ${clientCompany}
         ${clientDetails ? `<p class="billing-info">${clientDetails}</p>` : ""}
       </div>
@@ -664,7 +712,7 @@ ${watermark}
     <!-- notes -->
     <div class="notes-box">
       <p class="notes-lbl">Notes</p>
-      <p class="notes-text">${invoice.notes}</p>
+      <p class="notes-text">${escapeHtml(invoice.notes)}</p>
     </div>
     `
         : ""
@@ -677,7 +725,7 @@ ${watermark}
   <!-- footer -->
   <div class="footer">
     <p class="footer-left">Generated by <strong>Billd</strong> — Professional invoicing for freelancers</p>
-    <p class="footer-right">${invoice.invoiceNumber} · ${new Date().toLocaleDateString("en-NG")}</p>
+    <p class="footer-right">${escapeHtml(invoice.invoiceNumber)} · ${new Date().toLocaleDateString("en-NG")}</p>
   </div>
 
 </div><!-- /page -->
@@ -686,124 +734,192 @@ ${watermark}
 </html>`;
 }
 
-let _browser: Awaited<ReturnType<typeof puppeteer.launch>> | null = null;
-
-/**
- * Reuse a single Chromium browser across requests instead of launching a new
- * one per PDF. executablePath is set explicitly since relying on the
- * PUPPETEER_EXECUTABLE_PATH env var alone isn't reliable on Render's Docker
- * image. --no-zygote and --single-process keep memory down on the 512MB free
- * tier (Chromium's extra zygote processes can otherwise trigger an OOM kill),
- * and --disable-dev-shm-usage routes shared memory to /tmp since /dev/shm is
- * usually too small (64MB) inside containers.
- */
-async function getBrowser() {
-  if (!_browser || !_browser.connected) {
-    const executablePath =
-      process.env.PUPPETEER_EXECUTABLE_PATH ?? "/usr/bin/chromium";
-
-    _browser = await puppeteer.launch({
-      headless: true,
-      executablePath,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-gpu",
-        "--no-zygote",
-        "--single-process", // prevents extra Chromium sub-processes
-        "--disable-extensions",
-        "--disable-background-networking",
-        "--disable-default-apps",
-        "--mute-audio",
-      ],
-    });
-  }
-  return _browser;
+function killBrowser(browser: Browser) {
+  const child = browser.process();
+  if (child && child.exitCode === null) child.kill("SIGKILL");
 }
 
-async function _generatePDF(html: string): Promise<Buffer> {
-  let page: Page | null = null;
-
+async function closeBrowser(browser: Browser) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const browser = await getBrowser();
-    page = await browser.newPage();
-
-    // block remote image/font/media fetches to keep memory usage low, but
-    // allow data-URIs since logos come in as inline base64
-    await page.setRequestInterception(true);
-    page.on("request", (req) => {
-      const type = req.resourceType();
-      if (type === "image" || type === "font" || type === "media") {
-        if (req.url().startsWith("data:")) {
-          req.continue();
-        } else {
-          req.abort();
-        }
-      } else {
-        req.continue();
-      }
-    });
-
-    await page.setContent(html, {
-      waitUntil: "domcontentloaded",
-      timeout: 30_000,
-    });
-
-    await page.evaluate(() => document.fonts.ready);
-
-    // measure actual content height so the PDF page fits the content instead
-    // of using a fixed page size
-    const bodyHeight = await page.evaluate(() => {
-      const body = document.querySelector(".page") as HTMLElement;
-      return body ? body.scrollHeight : document.documentElement.scrollHeight;
-    });
-
-    const pdf = await page.pdf({
-      width: "794px", // A4-equivalent width
-      height: `${bodyHeight + 2}px`,
-      printBackground: true,
-      margin: { top: "0", right: "0", bottom: "0", left: "0" },
-    });
-
-    return Buffer.from(pdf);
-  } catch (err) {
-    // reset the singleton so the next call re-launches a fresh browser
-    if (_browser) {
-      try {
-        await _browser.close();
-      } catch {
-        /* ignore */
-      }
-      _browser = null;
-    }
-    throw err;
+    await Promise.race([
+      browser.close().catch(() => {}),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, 1000);
+      }),
+    ]);
   } finally {
-    if (page) {
+    clearTimeout(timer);
+    killBrowser(browser);
+  }
+}
+
+type PdfStage =
+  | "launch"
+  | "new_page"
+  | "configure"
+  | "content"
+  | "measure"
+  | "print"
+  | "cleanup";
+
+export class PdfTimeoutError extends HTTPException {
+  constructor(
+    readonly stage: PdfStage,
+    readonly elapsedMs: number,
+  ) {
+    super(504, { message: "PDF generation timed out. Please try again" });
+  }
+}
+
+export function createInvoicePdfRenderer(
+  options: {
+    launch?: typeof puppeteer.launch;
+    timeoutMs?: number;
+  } = {},
+) {
+  const launch = options.launch ?? puppeteer.launch.bind(puppeteer);
+  const timeoutMs = options.timeoutMs ?? 20_000;
+  let active = false;
+  let stopping = false;
+  let currentWork: Promise<Buffer> | undefined;
+  const browsers = new Set<Browser>();
+  const render = async (input: PDFInput): Promise<Buffer> => {
+    input = withIdentity(input);
+    if (stopping)
+      throw new HTTPException(503, {
+        message: "PDF renderer is shutting down",
+      });
+    if (active)
+      throw new HTTPException(503, {
+        message: "PDF renderer is busy. Please try again shortly",
+      });
+    const html = buildInvoicePdfHtml(input);
+    if (Buffer.byteLength(html, "utf8") > 1_500_000)
+      throw new HTTPException(422, {
+        message: "Invoice content exceeds PDF limits",
+      });
+    active = true;
+    let browser: Browser | undefined;
+    let expired = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const started = performance.now();
+    let stage: PdfStage = "launch";
+    const timeout = () =>
+      new PdfTimeoutError(stage, Math.round(performance.now() - started));
+    const work = async () => {
       try {
-        await page.close();
-      } catch {
-        /* ignore */
+        browser = await launch({
+          headless: true,
+          executablePath:
+            process.env.PUPPETEER_EXECUTABLE_PATH ?? "/usr/bin/chromium",
+          timeout: Math.min(10_000, timeoutMs),
+          protocolTimeout: Math.min(10_000, timeoutMs),
+          handleSIGTERM: false,
+          handleSIGINT: false,
+          handleSIGHUP: false,
+          args: [
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--disable-extensions",
+            "--disable-background-networking",
+            "--disable-default-apps",
+            "--mute-audio",
+            "--no-first-run",
+          ],
+        });
+        browsers.add(browser);
+        if (expired) throw timeout();
+        stage = "new_page";
+        const page = await browser.newPage();
+        stage = "configure";
+        await page.setJavaScriptEnabled(false);
+        await page.setCacheEnabled(false);
+        await page.setBypassServiceWorker(true);
+        await page.setViewport({ width: 794, height: 1123 });
+        const logo = safePdfLogo(input.sender.logoUrl);
+        await page.setRequestInterception(true);
+        page.on("request", (request) => {
+          const allowed =
+            logo !== null &&
+            request.resourceType() === "image" &&
+            request.url() === logo;
+          void (allowed ? request.continue() : request.abort()).catch(() => {});
+        });
+        stage = "content";
+        await page.setContent(html, { waitUntil: "load", timeout: timeoutMs });
+        stage = "measure";
+        const bodyHeight = await page.evaluate(
+          () => document.documentElement.scrollHeight,
+        );
+        if (
+          !Number.isFinite(bodyHeight) ||
+          bodyHeight <= 0 ||
+          bodyHeight > 20_000
+        )
+          throw new HTTPException(422, {
+            message: "Invoice is too tall to render as a PDF",
+          });
+        stage = "print";
+        const result = Buffer.from(
+          await page.pdf({
+            width: "794px",
+            height: `${bodyHeight + 2}px`,
+            printBackground: true,
+            margin: { top: "0", right: "0", bottom: "0", left: "0" },
+            timeout: timeoutMs,
+          }),
+        );
+        if (result.length > 5 * 1024 * 1024)
+          throw new HTTPException(422, {
+            message: "Generated PDF exceeds the 5 MiB download limit",
+          });
+        return result;
+      } catch (error) {
+        if (error instanceof TimeoutError) throw timeout();
+        throw error;
+      } finally {
+        stage = "cleanup";
+        if (browser) {
+          await closeBrowser(browser);
+          browsers.delete(browser);
+        }
+        active = false;
       }
-    }
-  }
-}
-
-export async function generateInvoicePDF(input: PDFInput): Promise<Buffer> {
-  const html = buildHTML(input);
-
-  try {
-    return await _generatePDF(html);
-  } catch (firstErr) {
-    // Chromium occasionally gets OOM-killed mid-render on Render's free tier.
-    // The first attempt resets the browser singleton above, so retry once
-    // with a fresh process before giving up.
-    console.warn("[pdf] First attempt failed, retrying once:", firstErr);
+    };
     try {
-      return await _generatePDF(html);
-    } catch (secondErr) {
-      console.error("[pdf] Retry also failed:", secondErr);
-      throw secondErr;
+      const pendingWork = work();
+      currentWork = pendingWork;
+      const clearWork = () => {
+        if (currentWork === pendingWork) currentWork = undefined;
+      };
+      void pendingWork.then(clearWork, clearWork);
+      return await Promise.race([
+        pendingWork,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            expired = true;
+            if (browser) killBrowser(browser);
+            reject(timeout());
+          }, timeoutMs);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
     }
-  }
+  };
+  return Object.assign(render, {
+    async shutdown(force = false) {
+      stopping = true;
+      if (force) {
+        for (const browser of browsers) killBrowser(browser);
+        return;
+      }
+      await currentWork?.catch(() => {});
+    },
+  });
 }
+
+export const generateInvoicePDF = createInvoicePdfRenderer();

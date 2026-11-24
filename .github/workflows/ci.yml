@@ -1,0 +1,155 @@
+name: Backend CI
+
+on:
+  push:
+    branches: [main, dev-branch]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependencies:
+    name: Dependency security audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.5"
+      - name: Audit all locked dependencies, including development tools
+        run: bun audit --audit-level=high
+
+  secrets:
+    name: Git history secret scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install checksum-verified Gitleaks
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl --fail --silent --show-error --location --retry 3 \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
+            --output gitleaks.tar.gz
+          echo '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks.tar.gz' | sha256sum --check --strict
+          mkdir -p security-bin
+          tar -xzf gitleaks.tar.gz -C security-bin gitleaks
+          echo "$RUNNER_TEMP/security-bin" >> "$GITHUB_PATH"
+      - name: Scan all fetched Git history with secret values redacted
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/gitleaksignore" <<'EOF'
+          # Historical documentation placeholder, not an issued encryption key.
+          4b494532b25b0c4c6e56f8ff0601bd855751d1b5:.env.example:generic-api-key:26
+          # Deterministic synthetic encryption key used only in configuration tests.
+          3158d7daae76ba8b8650c1f385e98d3851a17ad2:tests/configuration.test.ts:generic-api-key:21
+          # Deterministic Paystack-shaped value used only by payout integration tests.
+          de25bfd5e5d82a823980d21316a1e57171307888:tests/integration/payouts.test.ts:generic-api-key:30
+          EOF
+          gitleaks git --log-opts="--all" --redact=100 --ignore-gitleaks-allow \
+            --gitleaks-ignore-path "$RUNNER_TEMP/gitleaksignore" --exit-code=1 --no-banner .
+
+  checks:
+    name: Typecheck and smoke checks
+    # Ubuntu 24.04 supplies the PostgreSQL 16 recovery tools used below.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: billd_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci -d billd_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PUPPETEER_SKIP_DOWNLOAD: "true"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.5"
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Check types
+        run: bun run typecheck
+      - name: Check token validation and webhook responses
+        run: bun run test
+      - name: Check PDF rendering in Chromium
+        shell: bash
+        run: |
+          export PUPPETEER_EXECUTABLE_PATH="$(command -v google-chrome || command -v chromium)"
+          test -n "$PUPPETEER_EXECUTABLE_PATH"
+          "$PUPPETEER_EXECUTABLE_PATH" --version
+          bun run test:pdf
+      - name: Install matching PostgreSQL recovery tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes postgresql-client-16
+          echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
+      - name: Check sessions, financial records, migrations, and backup recovery
+        env:
+          TEST_DATABASE_URL: postgresql://ci:ci@localhost:5432/billd_test
+        run: bun run test:integration
+      - name: Check API startup and public boundaries
+        env:
+          NODE_ENV: test
+          PORT: "3001"
+          DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/billd_ci
+          JWT_ACCESS_SECRET: ci-access-secret-for-smoke-checks-only
+          JWT_REFRESH_SECRET: ci-refresh-secret-for-smoke-checks-only
+          PAYSTACK_SECRET_KEY: ci-paystack-secret-for-smoke-checks-only
+        shell: bash
+        run: |
+          bun run src/index.ts > /tmp/billd-api.log 2>&1 &
+          api_pid=$!
+          trap 'kill "$api_pid" 2>/dev/null || true; cat /tmp/billd-api.log' EXIT
+
+          for attempt in {1..30}; do
+            if curl --fail --silent http://localhost:3001/health > /dev/null; then
+              break
+            fi
+            kill -0 "$api_pid"
+            sleep 1
+          done
+
+          bun run scripts/smoke.ts
+
+  docker:
+    name: Docker build
+    needs: checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Build the deployment image
+        run: docker build --pull --no-cache --tag billd-api:ci .
+      - name: Check runtime behavior inside the image
+        run: docker run --rm --network none billd-api:ci bun run test
+      - name: Check PDF rendering inside the deployment image
+        run: docker run --rm --network none billd-api:ci bun run test:pdf

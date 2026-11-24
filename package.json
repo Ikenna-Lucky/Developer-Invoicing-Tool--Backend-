@@ -4,27 +4,37 @@
   "private": true,
   "scripts": {
     "dev": "bun run --watch src/index.ts",
-    "start": "bun run db:migrate && bun run src/index.ts",
+    "start": "bun scripts/start.ts",
     "typecheck": "tsc --noEmit",
+    "test": "bun test tests/paystack.test.ts tests/jwt.test.ts tests/email.test.ts tests/pdf.test.ts tests/observability.test.ts tests/database-backup.test.ts tests/request-limits.test.ts tests/shutdown.test.ts tests/server-lifecycle.test.ts tests/configuration.test.ts tests/openapi.test.ts",
+    "test:pdf": "bun test tests/pdf-browser.test.ts",
+    "test:integration": "bun test tests/integration",
+    "monitoring:check": "bun run scripts/check-monitoring.ts",
+    "payouts:reconcile": "bun run scripts/reconcile-payout.ts",
+    "db:backup": "bun run scripts/database-recovery.ts backup",
+    "db:restore": "bun run scripts/database-recovery.ts restore",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
-    "@hono/zod-validator": "^0.4.1",
+    "@hono/zod-validator": "0.9.1",
+    "@sentry/bun": "^11.16.0",
     "bcryptjs": "^2.4.3",
-    "drizzle-orm": "^0.30.10",
-    "hono": "^4.3.11",
+    "drizzle-orm": "0.45.4",
+    "hono": "4.13.21",
     "jose": "^5.4.1",
-    "resend": "^4.0.0",
     "postgres": "^3.4.4",
-    "puppeteer": "^22.15.0",
-    "zod": "^3.23.8"
+    "puppeteer": "25.18.1",
+    "zod": "4.6.7"
+  },
+  "overrides": {
+    "esbuild": "0.28.2"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
     "@types/bun": "latest",
-    "drizzle-kit": "^0.21.4",
+    "drizzle-kit": "0.31.11",
     "typescript": "^5.4.5"
   }
 }

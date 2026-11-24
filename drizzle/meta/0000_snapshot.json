@@ -1,7 +1,5 @@
 {
-  "id": "74c136fa-74e0-4f74-a0d1-6ae6b0a3c202",
-  "prevId": "00000000-0000-0000-0000-000000000000",
-  "version": "6",
+  "version": "7",
   "dialect": "postgresql",
   "tables": {
     "public.clients": {
@@ -70,19 +68,18 @@
         "clients_user_id_users_id_fk": {
           "name": "clients_user_id_users_id_fk",
           "tableFrom": "clients",
+          "columnsFrom": ["user_id"],
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "columnsTo": ["id"],
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {}
+      "uniqueConstraints": {},
+      "policies": {},
+      "isRLSEnabled": false,
+      "checkConstraints": {}
     },
     "public.invoice_items": {
       "name": "invoice_items",
@@ -137,19 +134,18 @@
         "invoice_items_invoice_id_invoices_id_fk": {
           "name": "invoice_items_invoice_id_invoices_id_fk",
           "tableFrom": "invoice_items",
+          "columnsFrom": ["invoice_id"],
           "tableTo": "invoices",
-          "columnsFrom": [
-            "invoice_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "columnsTo": ["id"],
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {}
+      "uniqueConstraints": {},
+      "policies": {},
+      "isRLSEnabled": false,
+      "checkConstraints": {}
     },
     "public.invoices": {
       "name": "invoices",
@@ -243,40 +239,33 @@
         "invoices_user_id_users_id_fk": {
           "name": "invoices_user_id_users_id_fk",
           "tableFrom": "invoices",
+          "columnsFrom": ["user_id"],
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "columnsTo": ["id"],
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         },
         "invoices_client_id_clients_id_fk": {
           "name": "invoices_client_id_clients_id_fk",
           "tableFrom": "invoices",
+          "columnsFrom": ["client_id"],
           "tableTo": "clients",
-          "columnsFrom": [
-            "client_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "columnsTo": ["id"],
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "invoices_invoice_number_unique": {
           "name": "invoices_invoice_number_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "invoice_number"
-          ]
+          "columns": ["invoice_number"],
+          "nullsNotDistinct": false
         }
-      }
+      },
+      "policies": {},
+      "isRLSEnabled": false,
+      "checkConstraints": {}
     },
     "public.payments": {
       "name": "payments",
@@ -325,27 +314,24 @@
         "payments_invoice_id_invoices_id_fk": {
           "name": "payments_invoice_id_invoices_id_fk",
           "tableFrom": "payments",
+          "columnsFrom": ["invoice_id"],
           "tableTo": "invoices",
-          "columnsFrom": [
-            "invoice_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "columnsTo": ["id"],
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "payments_stripe_payment_id_unique": {
           "name": "payments_stripe_payment_id_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "stripe_payment_id"
-          ]
+          "columns": ["stripe_payment_id"],
+          "nullsNotDistinct": false
         }
-      }
+      },
+      "policies": {},
+      "isRLSEnabled": false,
+      "checkConstraints": {}
     },
     "public.refresh_tokens": {
       "name": "refresh_tokens",
@@ -395,27 +381,24 @@
         "refresh_tokens_user_id_users_id_fk": {
           "name": "refresh_tokens_user_id_users_id_fk",
           "tableFrom": "refresh_tokens",
+          "columnsFrom": ["user_id"],
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "columnsTo": ["id"],
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "refresh_tokens_token_hash_unique": {
           "name": "refresh_tokens_token_hash_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "token_hash"
-          ]
+          "columns": ["token_hash"],
+          "nullsNotDistinct": false
         }
-      }
+      },
+      "policies": {},
+      "isRLSEnabled": false,
+      "checkConstraints": {}
     },
     "public.users": {
       "name": "users",
@@ -490,30 +473,32 @@
       "uniqueConstraints": {
         "users_email_unique": {
           "name": "users_email_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "email"
-          ]
+          "columns": ["email"],
+          "nullsNotDistinct": false
         }
-      }
+      },
+      "policies": {},
+      "isRLSEnabled": false,
+      "checkConstraints": {}
     }
   },
   "enums": {
     "public.invoice_status": {
       "name": "invoice_status",
       "schema": "public",
-      "values": [
-        "draft",
-        "sent",
-        "paid",
-        "overdue"
-      ]
+      "values": ["draft", "sent", "paid", "overdue"]
     }
   },
   "schemas": {},
   "_meta": {
-    "columns": {},
     "schemas": {},
-    "tables": {}
-  }
+    "tables": {},
+    "columns": {}
+  },
+  "id": "74c136fa-74e0-4f74-a0d1-6ae6b0a3c202",
+  "prevId": "00000000-0000-0000-0000-000000000000",
+  "sequences": {},
+  "policies": {},
+  "views": {},
+  "roles": {}
 }

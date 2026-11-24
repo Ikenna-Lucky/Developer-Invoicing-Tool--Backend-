@@ -1,5 +1,9 @@
 node_modules
-.env
-.env.local
+.env*
+!.env.example
+.git
 *.log
-drizzle
+backups
+*.billd-backup
+*.dump
+*.sql.gz
