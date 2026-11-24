@@ -137,67 +137,17 @@ jobs:
           bun run scripts/smoke.ts
 
   docker:
-    name: ${{ matrix.name }}
+    name: Docker build
     needs: checks
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Docker build
-            variant: debian
-            dockerfile: Dockerfile
-          - name: Alpine image evaluation
-            variant: alpine
-            dockerfile: Dockerfile.alpine
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Build the deployment image
-        id: image-build
-        run: docker build --pull --no-cache --file "${{ matrix.dockerfile }}" --tag billd-api:ci .
+        run: docker build --pull --no-cache --tag billd-api:ci .
       - name: Check runtime behavior inside the image
         run: docker run --rm --network none billd-api:ci bun run test
       - name: Check PDF rendering inside the deployment image
-        if: ${{ !cancelled() && steps.image-build.outcome == 'success' }}
         run: docker run --rm --network none billd-api:ci bun run test:pdf
-      - name: Install checksum-verified Grype
-        id: scanner-install
-        if: ${{ !cancelled() && steps.image-build.outcome == 'success' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$RUNNER_TEMP"
-          curl --fail --silent --show-error --location --retry 3 \
-            https://github.com/anchore/grype/releases/download/v0.122.1/grype_0.122.1_linux_amd64.tar.gz \
-            --output grype.tar.gz
-          echo 'f1ba7e2917ee1395618de20a98da0aa7c0fb1788927797651047c50502a37538  grype.tar.gz' | sha256sum --check --strict
-          mkdir -p security-bin
-          tar -xzf grype.tar.gz -C security-bin grype
-          echo "$RUNNER_TEMP/security-bin" >> "$GITHUB_PATH"
-      - name: Scan the built image for high and critical vulnerabilities
-        id: image-scan
-        if: ${{ !cancelled() && steps.scanner-install.outcome == 'success' }}
-        env:
-          GRYPE_CHECK_FOR_APP_UPDATE: "false"
-          GRYPE_DB_VALIDATE_AGE: "true"
-        shell: bash
-        run: |
-          status=0
-          grype docker:billd-api:ci --fail-on high --output json \
-            --file "$RUNNER_TEMP/image-scan.json" || status=$?
-          if test -s "$RUNNER_TEMP/image-scan.json"; then
-            jq -r '.matches[] | select(.vulnerability.severity == "High" or .vulnerability.severity == "Critical") | [.artifact.name, .artifact.version, .vulnerability.id, .vulnerability.severity, (.vulnerability.fix.state // "unknown")] | @tsv' \
-              "$RUNNER_TEMP/image-scan.json"
-          fi
-          exit "$status"
-      - name: Save the image vulnerability report
-        if: ${{ !cancelled() && steps.image-scan.outcome != 'skipped' }}
-        uses: actions/upload-artifact@v7.0.2
-        with:
-          name: image-security-${{ github.sha }}-${{ matrix.variant }}
-          path: ${{ runner.temp }}/image-scan.json
-          if-no-files-found: error
-          retention-days: 14

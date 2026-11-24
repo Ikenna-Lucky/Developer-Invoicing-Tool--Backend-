@@ -529,6 +529,29 @@ Details and artifact names are in
 
 ## Remaining controls
 
+Current CI decision, 24 November: the maintainer requested removal of the blocking
+image vulnerability scan. Grype, scan artifact uploads and the Alpine comparison
+were removed; the Debian Docker build, in-image runtime/PDF tests, application and
+database checks, dependency audit and secret scan remain. This removes a known
+cause of CI failure without resolving the underlying image findings. Automated
+OS/browser vulnerability scanning is now a coverage gap, and the historical
+image-security review remains evidence of unresolved findings. No production
+readiness or vulnerability-remediation claim follows from a green workflow.
+The existing `Docker build` check name is preserved. Remove an obsolete required
+`Alpine image evaluation` check from branch rules if it was configured; those
+dashboard settings have not been inspected or changed here.
+
+The 24 November per-CVE review is in
+[image-security-review.md](image-security-review.md). All 50 official CVE records
+were checked against the supplied Alpine report. Eleven platform mismatches and
+six absent-component findings cover 48 package matches; 33 CVEs covering 102
+matches remain open. Package archives confirmed that the affected GStreamer Opus
+plugin is present, while Alpine's SQLite build enables FTS5 and session support.
+Those findings were not dismissed. Current stable package queries offer the
+flagged versions. No exceptions, risk acceptance, deployment image change or
+production deployment was made. PR-15/16/17 remain blocked; no clean-image result
+is claimed.
+
 | Area                              | Status and next work                                                                                                                                                                                                                                                                           |
 | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Product rules (PR-01)             | Invoice transitions and draft-only editing/deletion implemented. Offline payment receipts and owner-triggered reconciliation are implemented/tested. Settlement routing and release acceptance criteria remain.                                                                                |

@@ -1,5 +1,37 @@
 # CI security checks
 
+## Current checks — 24 November 2026
+
+| Check | What fails CI |
+| --- | --- |
+| Dependency security audit | High/critical dependency advisory or audit error |
+| Git history secret scan | Secret finding or scanner error |
+| Typecheck and smoke checks | Type, runtime, PDF, database, migration, recovery or API smoke failure |
+| Docker build | Deployment image build, in-image runtime or PDF test failure |
+
+At the maintainer's request, the blocking Grype image scan, its report uploads,
+and the temporary Alpine comparison were removed. CI builds the existing Debian
+Dockerfile and keeps its established `Docker build` check name. Bun remains pinned
+to 1.4.5, and the image build still refreshes its base and Debian packages.
+
+This removes the image scan as a CI failure source. It does not fix or dismiss
+known OS/browser vulnerabilities. The dependency audit checks the Bun lockfile;
+it does not replace an image scan. Automated image vulnerability coverage is now
+absent. Keep the [CVE review](image-security-review.md) as historical evidence.
+A green CI run alone does not establish production readiness.
+
+Require the four check names above in branch protection and configure Render to
+wait for CI. If `Alpine image evaluation` was made required during the experiment,
+remove that obsolete requirement or GitHub can wait for a check that no longer
+runs. These dashboard settings were not changed here. Future workflow runs must
+verify the revised configuration; older failed runs retain their original result.
+
+## Historical investigation
+
+The sections below describe the previous scanner setup and its findings. Grype,
+the image artifacts and the Alpine candidate described there are no longer part
+of the active workflow. Their findings remain unresolved evidence.
+
 Backend CI now has three independent security checks alongside the existing
 type, behavior, migration, smoke, and Docker build checks:
 
@@ -178,6 +210,15 @@ Sources: [official Bun image variants](https://hub.docker.com/r/oven/bun),
 and [Puppeteer's Alpine guidance](https://pptr.dev/troubleshooting#running-on-alpine).
 
 ## Enforcing and maintaining the checks
+
+The [per-CVE Alpine review](image-security-review.md) records all 50 distinct
+blocking CVEs from the uploaded `9574367` report. Seventeen have architecture or
+component mismatches supported by CVE records, vendor advisories, dependency
+resolution and package file lists. Thirty-three remain open. Stable package
+queries still offer the flagged versions; some OpenSSL fixes are scheduled for
+1 December 2026. No scanner exceptions or release-risk acceptance were applied.
+The comparison jobs remain blocking. Package refreshes and passing PDF tests are
+not a substitute for resolving those findings.
 
 After pushing, require the dependency, secret, application, and Docker scan jobs
 in GitHub branch protection/rulesets. Verify Render waits for those CI checks
