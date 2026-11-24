@@ -22,7 +22,7 @@ Bun · Hono · TypeScript · Drizzle ORM · PostgreSQL (Neon) · Zod · jose (JW
 
 ## Getting started
 
-**Prerequisites:** [Bun](https://bun.sh) installed locally, and a Postgres database (this project is built against [Neon](https://neon.tech)).
+**Prerequisites:** [Bun](https://bun.sh) installed locally and a PostgreSQL database. The project is built against [Neon](https://neon.tech), but a local PostgreSQL database also works for development.
 
 ```bash
 git clone <repo-url>
@@ -35,41 +35,73 @@ bun run dev
 
 The API starts on `http://localhost:3001` by default.
 
+### Local development services
+
+For the core API, configure `DATABASE_URL`, `JWT_ACCESS_SECRET`, and
+`JWT_REFRESH_SECRET`. Generate the JWT values with `openssl rand -hex 64`.
+
+The following integrations are optional when developing locally:
+
+- **Paystack:** leave `PAYSTACK_SECRET_KEY` unset to send invoices without an
+  online payment link. If configured, use only an `sk_test_...` key for this
+  portfolio project; test mode does not move real money.
+- **Resend:** leave `RESEND_API_KEY` and `EMAIL_QUEUE_ENCRYPTION_KEY` unset to
+  disable email delivery locally. Email-related actions can still create queued
+  work, but no local worker sends it to a provider.
+- **Google OAuth, Cloudinary, and Sentry:** each remains disabled until its
+  corresponding environment variables are provided.
+
+Never commit `.env` files or provider keys. `.env.example` documents the full
+set of supported variables.
+
 ## Environment variables
 
-| Variable                 | Description                                                          |
-| ------------------------ | -------------------------------------------------------------------- |
-| `DATABASE_URL`           | Postgres connection string                                           |
-| `JWT_ACCESS_SECRET`      | Secret for signing access tokens (32+ chars)                         |
-| `JWT_REFRESH_SECRET`     | Secret for signing refresh tokens (32+ chars)                        |
-| `JWT_ACCESS_EXPIRES_IN`  | Access token lifetime, e.g. `15m`                                    |
-| `JWT_REFRESH_EXPIRES_IN` | Refresh token lifetime, e.g. `7d`                                    |
-| `PAYSTACK_SECRET_KEY`    | Paystack secret key (also used to verify webhook signatures)         |
-| `PAYSTACK_PUBLIC_KEY`    | Paystack public key                                                  |
-| `EMAIL_FROM`             | From address for outgoing email                                      |
-| `RESEND_API_KEY`         | Resend API key                                                       |
-| `CLOUDINARY_CLOUD_NAME`  | Cloudinary cloud name (logo/avatar uploads)                          |
-| `CLOUDINARY_API_KEY`     | Cloudinary API key                                                   |
-| `CLOUDINARY_API_SECRET`  | Cloudinary API secret                                                |
-| `GOOGLE_CLIENT_ID`       | Google OAuth client ID                                               |
-| `GOOGLE_CLIENT_SECRET`   | Google OAuth client secret                                           |
-| `PORT`                   | Port the API listens on (default `3001`)                             |
-| `API_URL`                | Public URL of this API (used to build the Google OAuth redirect URI) |
-| `FRONTEND_URL`           | URL of the frontend app (used for CORS and redirect targets)         |
-| `NODE_ENV`               | `development` or `production`                                        |
-
-Generate strong JWT secrets with `openssl rand -hex 64`.
+| Variable                     | Description                                                                                          |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`               | Postgres connection string                                                                           |
+| `JWT_ACCESS_SECRET`          | Secret for signing access tokens (32+ chars)                                                         |
+| `JWT_REFRESH_SECRET`         | Secret for signing refresh tokens (32+ chars)                                                        |
+| `JWT_ACCESS_EXPIRES_IN`      | Access token lifetime, e.g. `15m`                                                                    |
+| `JWT_REFRESH_EXPIRES_IN`     | Refresh token lifetime, e.g. `7d`                                                                    |
+| `PAYSTACK_SECRET_KEY`        | Optional locally; use an `sk_test_...` Paystack secret key for test checkouts and webhook signatures |
+| `PAYSTACK_PUBLIC_KEY`        | Optional Paystack public key                                                                         |
+| `EMAIL_FROM`                 | Optional sender address for outgoing email                                                           |
+| `RESEND_API_KEY`             | Optional locally; required for production email delivery                                             |
+| `CLOUDINARY_CLOUD_NAME`      | Cloudinary cloud name (logo/avatar uploads)                                                          |
+| `CLOUDINARY_API_KEY`         | Cloudinary API key                                                                                   |
+| `CLOUDINARY_API_SECRET`      | Cloudinary API secret                                                                                |
+| `GOOGLE_CLIENT_ID`           | Optional Google OAuth client ID                                                                      |
+| `GOOGLE_CLIENT_SECRET`       | Optional Google OAuth client secret                                                                  |
+| `PORT`                       | Port the API listens on (default `3001`)                                                             |
+| `API_URL`                    | Public URL of this API (used to build the Google OAuth redirect URI)                                 |
+| `FRONTEND_URL`               | URL of the frontend app (used for CORS and redirect targets)                                         |
+| `NODE_ENV`                   | `development`, `test`, or `production`                                                               |
+| `EMAIL_QUEUE_ENCRYPTION_KEY` | Required when email delivery is configured; use `openssl rand -hex 32`                               |
+| `SENTRY_DSN`                 | Optional backend error-monitoring DSN                                                                |
 
 ## Scripts
 
-| Command               | Description                                             |
-| --------------------- | ------------------------------------------------------- |
-| `bun run dev`         | Start the API with hot reload                           |
-| `bun run start`       | Run pending migrations, then start the API (production) |
-| `bun run typecheck`   | Type-check without emitting output                      |
-| `bun run db:generate` | Generate a new Drizzle migration from schema changes    |
-| `bun run db:migrate`  | Apply pending migrations                                |
-| `bun run db:studio`   | Open Drizzle Studio to browse the database              |
+| Command                                 | Description                                                     |
+| --------------------------------------- | --------------------------------------------------------------- |
+| `bun run dev`                           | Start the API with hot reload                                   |
+| `bun run start`                         | Run pending migrations, then start the API (production)         |
+| `bun run typecheck`                     | Type-check without emitting output                              |
+| `bun run db:generate`                   | Generate a new Drizzle migration from schema changes            |
+| `bun run db:migrate`                    | Apply pending migrations                                        |
+| `bun run db:studio`                     | Open Drizzle Studio to browse the database                      |
+| `bun run test`                          | Run focused unit and API tests                                  |
+| `bun run test:integration`              | Run PostgreSQL integration tests (requires `TEST_DATABASE_URL`) |
+| `bun run test:pdf`                      | Run real Chromium PDF tests                                     |
+| `bun run payouts:reconcile <id> <code>` | Reconcile a pending Paystack test subaccount                    |
+
+## Continuous integration
+
+GitHub Actions runs dependency and secret checks, TypeScript validation, unit and
+PostgreSQL integration tests, Chromium PDF tests, API smoke checks, and Docker
+runtime checks for pushes and pull requests. The workflow is in
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml). It is a portfolio-quality
+safety net; provider interactions are stubbed in CI and should remain test mode
+until a real deployment is intentionally set up.
 
 ## Project structure
 
