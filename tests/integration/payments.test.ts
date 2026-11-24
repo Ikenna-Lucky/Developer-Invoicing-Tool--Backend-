@@ -47,6 +47,7 @@ async function fixture(userId = randomUUID()) {
     clientId,
     invoiceNumber: `TEST-${invoiceId}`,
     status: "sent",
+    paystackRoutingRequired: false,
     issueDate: new Date(),
     dueDate: new Date(),
     totalAmount: "1250.50",

@@ -3,7 +3,7 @@ import { HTTPException } from "hono/http-exception";
 import { eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { DB } from "../db";
-import { invoices, payments } from "../db/schema";
+import { invoices, payments, paymentCheckouts } from "../db/schema";
 import { lockOwnedInvoice } from "./invoices";
 
 export const paystackChargeSchema = z.object({
@@ -13,6 +13,8 @@ export const paystackChargeSchema = z.object({
   status: z.literal("success"),
   currency: z.string(),
   metadata: z.unknown().optional(),
+  domain: z.enum(["test", "live"]).optional(),
+  subaccount: z.object({ subaccount_code: z.string() }).nullable().optional(),
 });
 
 export type PaystackCharge = z.infer<typeof paystackChargeSchema>;
@@ -145,6 +147,22 @@ export async function recordPaystackPayment(
       .where(eq(invoices.id, invoiceId))
       .for("update");
     if (!invoice) throw new PaymentConflict("Payment invoice was not found");
+
+    if (invoice.paystackRoutingRequired) {
+      const checkout = await tx.query.paymentCheckouts.findFirst({
+        where: eq(paymentCheckouts.reference, charge.reference),
+      });
+      if (
+        !checkout ||
+        checkout.invoiceId !== invoiceId ||
+        checkout.amountKobo !== charge.amount ||
+        checkout.mode !== charge.domain ||
+        checkout.subaccountCode !== charge.subaccount?.subaccount_code
+      )
+        throw new PaymentConflict(
+          "Payment does not match the invoice's recorded payout routing",
+        );
+    }
 
     if (
       charge.currency !== "NGN" ||

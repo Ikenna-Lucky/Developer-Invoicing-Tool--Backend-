@@ -56,7 +56,7 @@ test("account, client, invoice, and manual status changes record only approved f
   const { ownerId, invoice } = await fixture();
   await database
     .update(schema.invoices)
-    .set({ status: "sent" })
+    .set({ status: "sent", paystackRoutingRequired: false })
     .where(eq(schema.invoices.id, invoice.id));
   await changeInvoiceStatus(database, ownerId, invoice.id, "overdue");
   const events = await history(ownerId);
@@ -84,7 +84,7 @@ test("concurrent payment replays produce one financial audit event", async () =>
   const { ownerId, invoice } = await fixture();
   await database
     .update(schema.invoices)
-    .set({ status: "sent" })
+    .set({ status: "sent", paystackRoutingRequired: false })
     .where(eq(schema.invoices.id, invoice.id));
   const charge = {
     reference: `secret-${randomUUID()}`,

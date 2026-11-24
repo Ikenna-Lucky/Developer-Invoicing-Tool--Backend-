@@ -10,6 +10,7 @@
     "test:pdf": "bun test tests/pdf-browser.test.ts",
     "test:integration": "bun test tests/integration",
     "monitoring:check": "bun run scripts/check-monitoring.ts",
+    "payouts:reconcile": "bun run scripts/reconcile-payout.ts",
     "db:backup": "bun run scripts/database-recovery.ts backup",
     "db:restore": "bun run scripts/database-recovery.ts restore",
     "db:generate": "drizzle-kit generate",

@@ -19,6 +19,7 @@ import auth from "./routes/auth";
 import clients from "./routes/clients";
 import invoices from "./routes/invoices";
 import webhooks from "./routes/webhooks";
+import payouts from "./routes/payouts";
 
 const app = new Hono();
 app.use("*", requestLogging());
@@ -58,6 +59,7 @@ app.route("/auth", auth);
 app.route("/clients", clients);
 app.route("/invoices", invoices);
 app.route("/webhooks", webhooks);
+app.route("/payouts", payouts);
 
 app.get("/", (c) => {
   return c.json({

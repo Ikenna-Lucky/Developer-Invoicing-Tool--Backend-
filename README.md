@@ -12,6 +12,7 @@ Built with [Hono](https://hono.dev) running on [Bun](https://bun.sh), with [Driz
 - Invoice PDF generation via headless Chromium (Puppeteer)
 - Transactional email (invoice delivery, password reset) via Resend
 - Paystack payment links on send, plus a webhook handler that marks invoices paid
+- Freelancer payout subaccounts with zero platform commission and Paystack fees deducted from the freelancer's share; see [setup and rollout](docs/paystack-payouts.md)
 - Soft delete for invoices — a Trash view with restore, and permanent delete
 - Password reset flow with one-time, hashed, expiring tokens
 

@@ -560,7 +560,7 @@ test("editing and payment settlement cannot leave changed paid totals", async ()
   const { userId, invoice } = await fixture();
   await database
     .update(schema.invoices)
-    .set({ status: "sent" })
+    .set({ status: "sent", paystackRoutingRequired: false })
     .where(eq(schema.invoices.id, invoice.id));
   const results = await Promise.allSettled([
     recordPaystackPayment(database, {

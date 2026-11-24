@@ -61,6 +61,41 @@ export const users = pgTable("users", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
+export const payoutAccounts = pgTable(
+  "payout_accounts",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    mode: text("mode").notNull(),
+    status: text("status").notNull().default("pending"),
+    subaccountCode: text("subaccount_code"),
+    bankCode: text("bank_code").notNull(),
+    accountLast4: text("account_last4").notNull(),
+    accountName: text("account_name").notNull(),
+    requestHash: text("request_hash").notNull(),
+    keyFingerprint: text("key_fingerprint").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    ownerMode: unique("payout_accounts_owner_mode_unique").on(
+      table.userId,
+      table.mode,
+    ),
+    providerCode: unique("payout_accounts_mode_code_unique").on(
+      table.mode,
+      table.subaccountCode,
+    ),
+    validState: check(
+      "payout_accounts_state",
+      sql`${table.mode} IN ('test', 'live') AND ((${table.status} = 'pending' AND ${table.subaccountCode} IS NULL) OR (${table.status} = 'ready' AND ${table.subaccountCode} IS NOT NULL))`,
+    ),
+  }),
+);
+
 // Refresh tokens — stored so individual sessions can be revoked (logout, password change, etc.)
 export const refreshTokens = pgTable(
   "refresh_tokens",
@@ -166,6 +201,9 @@ export const invoices = pgTable(
   "invoices",
   {
     id: text("id").primaryKey(),
+    paystackRoutingRequired: boolean("paystack_routing_required")
+      .notNull()
+      .default(true),
     userId: text("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
@@ -212,6 +250,33 @@ export const invoiceItems = pgTable("invoice_items", {
   amount: numeric("amount", { precision: 10, scale: 2 }).notNull(), // quantity * rate
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
+
+export const paymentCheckouts = pgTable(
+  "payment_checkouts",
+  {
+    reference: text("reference").primaryKey(),
+    invoiceId: text("invoice_id")
+      .notNull()
+      .unique()
+      .references(() => invoices.id, { onDelete: "restrict" }),
+    payoutAccountId: text("payout_account_id")
+      .notNull()
+      .references(() => payoutAccounts.id, { onDelete: "restrict" }),
+    subaccountCode: text("subaccount_code").notNull(),
+    mode: text("mode").notNull(),
+    amountKobo: bigint("amount_kobo", { mode: "number" }).notNull(),
+    feeBearer: text("fee_bearer").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    validRouting: check(
+      "payment_checkouts_routing",
+      sql`${table.mode} IN ('test', 'live') AND ${table.feeBearer} IN ('account', 'subaccount') AND ${table.amountKobo} BETWEEN 1 AND 9007199254740991`,
+    ),
+  }),
+);
 
 export const requestRateLimits = pgTable(
   "request_rate_limits",

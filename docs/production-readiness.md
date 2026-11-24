@@ -5,6 +5,27 @@ with full NGN invoice payments. This is a progress register, not release approva
 The backend is not ready for a production readiness claim while the blockers
 below remain. Render configuration and live transactions have not been verified.
 
+## Freelancer routing update — 24 November 2026
+
+Migration 0012 adds owner-scoped payout accounts and immutable invoice checkout
+routing. New online invoice sends require a ready Paystack subaccount; provider
+errors leave the invoice draft. Commission is zero and the freelancer bears
+Paystack's fee. Payment matching checks the saved reference, environment,
+subaccount, gross amount, and currency before recording payment atomically.
+Ambiguous account creation remains pending for operator reconciliation.
+
+Local verification uses real disposable PostgreSQL databases and stub provider
+responses. Type checking passed, along with 126 PostgreSQL integration tests and
+54 unit tests; one OS signal test was skipped on Windows. The eight payout tests
+also passed after adding signed webhook replay checks. Drizzle generation found
+no schema drift. Actual Paystack onboarding, test webhook payloads, Render deployment,
+and live bank settlements remain unverified. Existing issued invoices retain
+legacy links and need review before live operation. The frontend payout form and
+reviewed bank-change/key-rotation workflows remain follow-up work. See
+[the payout runbook](paystack-payouts.md) for setup and release checks. Historical
+notes below describe earlier stages; this update establishes the current routing
+policy, not a production-readiness approval.
+
 ## Payment changes
 
 - Payment insertion and invoice settlement now commit in one transaction.

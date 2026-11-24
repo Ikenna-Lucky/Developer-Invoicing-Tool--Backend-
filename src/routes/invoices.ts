@@ -35,6 +35,7 @@ import {
   PaymentConflict,
 } from "../lib/payments";
 import { verifyPaystackPayment } from "../lib/paystack";
+import { initializeInvoiceCheckout } from "../lib/payment-checkout";
 import { createAuthMiddleware } from "../middleware/auth";
 import { generateInvoicePDF, type PDFInput } from "../lib/pdf";
 import { escapeEmailHtml } from "../lib/email";
@@ -46,6 +47,7 @@ export function createInvoicesRouter(
   database: DB = defaultDb,
   renderPdf: (input: PDFInput) => Promise<Buffer> = generateInvoicePDF,
   verifyPayment = verifyPaystackPayment,
+  initializeCheckout = initializeInvoiceCheckout,
 ) {
   const db = database;
   const invoiceClientName = sql<string>`CASE WHEN ${invoices.identitySnapshot} IS NULL THEN ${clients.name} ELSE ${invoices.identitySnapshot}->'client'->>'name' END`;
@@ -449,55 +451,10 @@ export function createInvoicesRouter(
         throw new HTTPException(404, { message: "Client not found" });
       invoice.client = customer;
 
-      // Send without a payment link if Paystack fails or takes longer than 8 seconds.
-      let paymentLink: string | null = null;
-
-      const paystackKey = process.env.PAYSTACK_SECRET_KEY;
-      if (paystackKey) {
-        const controller = new AbortController();
-        const paystackTimeout = setTimeout(() => controller.abort(), 8_000);
-
-        try {
-          const amountInKobo = Math.round(Number(invoice.totalAmount) * 100); // 1 NGN = 100 kobo
-
-          const paystackRes = await fetch(
-            "https://api.paystack.co/transaction/initialize",
-            {
-              method: "POST",
-              headers: {
-                Authorization: `Bearer ${paystackKey}`,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                email: invoice.client.email,
-                amount: amountInKobo,
-                reference: `BILLD-${crypto.randomUUID()}`,
-                currency: "NGN",
-                metadata: {
-                  invoice_id: invoice.id,
-                  invoice_number: invoice.invoiceNumber,
-                  client_name: invoice.client.name,
-                },
-              }),
-              signal: controller.signal,
-            },
-          );
-
-          if (paystackRes.ok) {
-            const paystackData = (await paystackRes.json()) as {
-              status: boolean;
-              data: { authorization_url: string; reference: string };
-            };
-            if (paystackData.status) {
-              paymentLink = paystackData.data.authorization_url;
-            }
-          }
-        } catch (err) {
-          reportError("paystack.checkout_failed", err);
-        } finally {
-          clearTimeout(paystackTimeout);
-        }
-      }
+      // Configured online payments must use the invoice owner's saved payout route.
+      const paymentLink = process.env.PAYSTACK_SECRET_KEY
+        ? await initializeCheckout(tx, userId, invoice, invoice.client.email)
+        : null;
 
       // Issuing the invoice and queueing its email must commit together.
       await tx

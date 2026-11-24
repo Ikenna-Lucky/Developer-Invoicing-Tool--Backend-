@@ -114,7 +114,7 @@ beforeAll(async () => {
   invoiceId = invoice.id;
   await context.database
     .update(schema.invoices)
-    .set({ status: "sent" })
+    .set({ status: "sent", paystackRoutingRequired: false })
     .where(eq(schema.invoices.id, invoiceId));
   await recordPaystackPayment(context.database, {
     reference: `recovery-${randomUUID()}`,

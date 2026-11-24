@@ -22,6 +22,7 @@ export function invoicePdfInput(): PDFInput {
       updatedAt: date,
     },
     invoice: {
+      paystackRoutingRequired: false,
       id: "invoice",
       userId: "owner",
       clientId: "client",
